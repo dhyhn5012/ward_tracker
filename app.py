@@ -4,7 +4,7 @@ import os
 import sqlite3
 from datetime import datetime, date, timedelta
 from io import BytesIO
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 
 import altair as alt
 import pandas as pd
@@ -28,7 +28,7 @@ CUSTOM_CSS = """
 .kpi .v{font-weight:700;font-size:1.6rem;margin-top:6px}
 :root{--text-color-secondary:#6b7280;--background-color: rgba(255,255,255,0.6)}
 [data-theme="dark"] :root{--text-color-secondary:#9ca3af;--background-color:rgba(255,255,255,0.04)}
-.block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
+.block-container {padding-top: 1.2rem; padding-bottom: 2 rem;}
 hr {margin: 0.6rem 0 1rem 0;}
 .small {font-size: 0.9rem; color: var(--text-color-secondary);}
 .badge {display:inline-block;padding:2px 8px;border-radius:999px;font-size:0.75rem;border:1px solid rgba(0,0,0,0.1)}
@@ -40,12 +40,32 @@ hr {margin: 0.6rem 0 1rem 0;}
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 # ======================
+# Danh mục cận lâm sàng thường dùng (mặc định)
+# ======================
+COMMON_TESTS: List[Tuple[str, str]] = [
+    ("XN máu", "Tổng phân tích tế bào máu"),
+    ("XN máu", "Sinh hoá cơ bản"),
+    ("XN máu", "Đông máu"),
+    ("XN máu", "Đường huyết"),
+    ("XN máu", "HbA1c"),
+    ("X-quang", "X-quang ngực thẳng"),
+    ("Siêu âm", "Siêu âm ổ bụng"),
+    ("CT", "CT sọ não không cản quang"),
+    ("Khác", "Điện tim"),
+]
+
+# ======================
 # Helpers DB
 # ======================
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
+def _column_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
+    cur = conn.execute(f"PRAGMA table_info({table})")
+    cols = [r[1] for r in cur.fetchall()]
+    return col in cols
 
 def init_db() -> None:
     with get_conn() as conn:
@@ -80,32 +100,70 @@ def init_db() -> None:
             result_date TEXT,
             FOREIGN KEY(patient_id) REFERENCES patients(id)
         )""")
+        # Lưu khám đi buồng
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS ward_rounds (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient_id INTEGER,
+            visit_date TEXT,                -- YYYY-MM-DD
+            general_status TEXT,            -- Tình trạng toàn thân
+            system_exam TEXT,               -- Khám bộ phận
+            plan TEXT,                      -- Phương án điều trị
+            extra_tests TEXT,               -- Danh sách CLS đã chọn (dạng văn bản)
+            extra_tests_note TEXT,          -- Diễn giải CLS
+            created_at TEXT,
+            FOREIGN KEY(patient_id) REFERENCES patients(id)
+        )""")
         conn.commit()
+
+        # --- Migration an toàn: thêm cột 'diagnosis' & 'operated' nếu chưa có ---
+        if not _column_exists(conn, "patients", "diagnosis"):
+            try:
+                conn.execute("ALTER TABLE patients ADD COLUMN diagnosis TEXT")
+                conn.commit()
+            except Exception:
+                pass
+        if not _column_exists(conn, "patients", "operated"):
+            try:
+                conn.execute("ALTER TABLE patients ADD COLUMN operated INTEGER DEFAULT 0")
+                conn.commit()
+            except Exception:
+                pass
 
 def _exec(query: str, params: tuple = ()) -> None:
     with get_conn() as conn:
         conn.execute(query, params)
         conn.commit()
 
-def add_patient(patient: Dict[str, Any]) -> None:
-    _exec("""
-    INSERT INTO patients
-    (medical_id, name, dob, ward, bed, admission_date, severity, surgery_needed,
-     planned_treatment_days, meds, notes, active)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,1)
-    """, (
-        patient.get("medical_id"),
-        patient.get("name"),
-        patient.get("dob"),
-        patient.get("ward"),
-        patient.get("bed"),
-        patient.get("admission_date"),
-        patient.get("severity"),
-        1 if patient.get("surgery_needed") else 0,
-        patient.get("planned_treatment_days"),
-        patient.get("meds"),
-        patient.get("notes"),
-    ))
+def add_patient(patient: Dict[str, Any]) -> int:
+    """Thêm BN và trả về id."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO patients
+            (medical_id, name, dob, ward, bed, admission_date, severity, surgery_needed,
+             planned_treatment_days, meds, notes, active, diagnosis, operated)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)
+        """, (
+            patient.get("medical_id"),
+            patient.get("name"),
+            patient.get("dob"),
+            patient.get("ward"),
+            patient.get("bed"),
+            patient.get("admission_date"),
+            patient.get("severity"),
+            1 if patient.get("surgery_needed") else 0,
+            patient.get("planned_treatment_days"),
+            patient.get("meds"),
+            patient.get("notes"),
+            patient.get("diagnosis"),
+            1 if patient.get("operated") else 0,
+        ))
+        conn.commit()
+        return int(cur.lastrowid)
+
+def update_patient_operated(patient_id: int, operated: bool) -> None:
+    _exec("UPDATE patients SET operated=? WHERE id=?", (1 if operated else 0, patient_id))
 
 def add_order(order: Dict[str, Any]) -> None:
     _exec("""
@@ -114,6 +172,18 @@ def add_order(order: Dict[str, Any]) -> None:
     VALUES (?,?,?,?,?,?)
     """, (order["patient_id"], order["order_type"], order.get("description", ""),
           order.get("date_ordered"), order.get("scheduled_date"), order.get("status", "pending")))
+
+def add_ward_round(rec: Dict[str, Any]) -> None:
+    _exec("""
+    INSERT INTO ward_rounds
+    (patient_id, visit_date, general_status, system_exam, plan, extra_tests, extra_tests_note, created_at)
+    VALUES (?,?,?,?,?,?,?,?)
+    """, (
+        rec["patient_id"], rec["visit_date"], rec.get("general_status",""),
+        rec.get("system_exam",""), rec.get("plan",""),
+        rec.get("extra_tests",""), rec.get("extra_tests_note",""),
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ))
 
 def mark_order_done(order_id: int, result_text: Optional[str] = None) -> None:
     now = date.today().strftime(DATE_FMT)
@@ -138,6 +208,16 @@ def days_between(d1: Optional[str], d2: Optional[str] = None) -> Optional[int]:
     d2d = datetime.strptime(d2, DATE_FMT).date() if d2 else date.today()
     return (d2d - d1d).days
 
+def calc_age(dob_str: Optional[str]) -> Optional[int]:
+    if not dob_str:
+        return None
+    try:
+        d = datetime.strptime(dob_str, DATE_FMT).date()
+        today = date.today()
+        return today.year - d.year - ((today.month, today.day) < (d.month, d.day))
+    except Exception:
+        return None
+
 def export_excel(sheets: Dict[str, pd.DataFrame]) -> BytesIO:
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -150,32 +230,29 @@ def safe_rerun():
     try:
         st.rerun()
     except Exception:
-        st.experimental_rerun()
+        st.rerun()
 
 def load_sample_data():
-    p1 = {"medical_id":"BN001","name":"Nguyễn A","dob":"1975-02-10","ward":"A1","bed":"01",
+    p1 = {"medical_id":"BN001","name":"Nguyễn A","dob":"1975-02-10","ward":"304","bed":"01",
           "admission_date":date.today().strftime(DATE_FMT),"severity":4,"surgery_needed":1,
-          "planned_treatment_days":7,"meds":"Thuốc A","notes":"Theo dõi huyết áp"}
-    p2 = {"medical_id":"BN002","name":"Trần B","dob":"1965-06-15","ward":"A1","bed":"02",
+          "planned_treatment_days":7,"meds":"Thuốc A","notes":"Theo dõi huyết áp","diagnosis":"Tăng huyết áp","operated":0}
+    p2 = {"medical_id":"BN002","name":"Trần B","dob":"1965-06-15","ward":"305","bed":"02",
           "admission_date":(date.today()-timedelta(days=2)).strftime(DATE_FMT),"severity":2,
-          "surgery_needed":0,"planned_treatment_days":3,"meds":"Thuốc B","notes":""}
-    p3 = {"medical_id":"BN003","name":"Lê C","dob":"1988-11-22","ward":"B2","bed":"05",
+          "surgery_needed":0,"planned_treatment_days":3,"meds":"Thuốc B","notes":"","diagnosis":"ĐTĐ typ 2","operated":1}
+    p3 = {"medical_id":"BN003","name":"Lê C","dob":"1988-11-22","ward":"306","bed":"05",
           "admission_date":(date.today()-timedelta(days=6)).strftime(DATE_FMT),"severity":5,
-          "surgery_needed":1,"planned_treatment_days":10,"meds":"Thuốc C","notes":"Theo dõi sau mổ"}
-    add_patient(p1); add_patient(p2); add_patient(p3)
+          "surgery_needed":1,"planned_treatment_days":10,"meds":"Thuốc C","notes":"Theo dõi sau mổ","diagnosis":"Chấn thương sọ não","operated":0}
+    id1 = add_patient(p1); id2 = add_patient(p2); id3 = add_patient(p3)
 
-    dfp = query_df("SELECT id, medical_id FROM patients")
-    m = {r["medical_id"]: r["id"] for _, r in dfp.iterrows()}
-
-    add_order({"patient_id":m["BN001"],"order_type":"CT","description":"CT não",
+    add_order({"patient_id":id1,"order_type":"CT","description":"CT não",
                "date_ordered":date.today().strftime(DATE_FMT),
                "scheduled_date":(date.today()+timedelta(days=1)).strftime(DATE_FMT),
                "status":"scheduled"})
-    add_order({"patient_id":m["BN002"],"order_type":"XN máu","description":"Tổng phân tích",
+    add_order({"patient_id":id2,"order_type":"XN máu","description":"Tổng phân tích",
                "date_ordered":(date.today()-timedelta(days=1)).strftime(DATE_FMT),
                "scheduled_date":date.today().strftime(DATE_FMT),
                "status":"pending"})
-    add_order({"patient_id":m["BN003"],"order_type":"Siêu âm","description":"Ổ bụng",
+    add_order({"patient_id":id3,"order_type":"Siêu âm","description":"Ổ bụng",
                "date_ordered":date.today().strftime(DATE_FMT),
                "scheduled_date":(date.today()+timedelta(days=2)).strftime(DATE_FMT),
                "status":"scheduled"})
@@ -302,7 +379,7 @@ if APP_PASSWORD:
 st.sidebar.title("🩺 Menu")
 page = st.sidebar.radio(
     "Chọn trang",
-    ["Trang chủ", "Nhập BN", "Lịch XN/Chụp", "Tìm kiếm & Lịch sử", "Báo cáo", "Cài đặt / Demo"],
+    ["Trang chủ", "Nhập BN", "Đi buồng", "Lịch XN/Chụp", "Tìm kiếm & Lịch sử", "Báo cáo", "Cài đặt / Demo"],
     index=0
 )
 
@@ -343,23 +420,26 @@ if page == "Trang chủ":
         if df_active.empty:
             st.info("Không có bệnh nhân đang nằm.")
         else:
-            base_cols = ["id","medical_id","name","ward","bed","severity","surgery_needed","admission_date","notes"]
+            base_cols = ["id","medical_id","name","ward","bed","severity","surgery_needed","admission_date","diagnosis","notes","operated"]
             view_cols = [c for c in base_cols if c in df_active.columns]
             st.dataframe(
                 df_active[view_cols].rename(columns={
                     "medical_id":"Mã BA","name":"Họ tên","ward":"Phòng","bed":"Giường",
-                    "severity":"Mức độ","surgery_needed":"Cần mổ","admission_date":"Ngày NV","notes":"Ghi chú"
+                    "severity":"Mức độ","surgery_needed":"Cần mổ","admission_date":"Ngày NV",
+                    "diagnosis":"Chẩn đoán","notes":"Ghi chú","operated":"Đã phẫu thuật"
                 }), use_container_width=True, hide_index=True
             )
             for row in df_active.to_dict(orient="records"):
-                cols = st.columns([1,3,1,1,1,1])
+                cols = st.columns([1,3,1,1,1,1,1])
                 cols[0].markdown(f"**{row['medical_id']}**")
-                cols[1].markdown(f"**{row['name']}**  \n<span class='small'>{row.get('notes','')}</span>", unsafe_allow_html=True)
+                diag_txt = f"<br/><span class='small'>Chẩn đoán: {row.get('diagnosis','')}</span>" if row.get("diagnosis") else ""
+                cols[1].markdown(f"**{row['name']}**  \n<span class='small'>{row.get('notes','')}</span>{diag_txt}", unsafe_allow_html=True)
                 cols[2].markdown(f"{row.get('ward','')}/{row.get('bed','') or ''}")
                 sev_badge = "danger" if int(row.get("severity",0))>=4 else ("warn" if int(row.get("severity",0))==3 else "ok")
                 cols[3].markdown(f"<span class='badge {sev_badge}'>Sev {row.get('severity')}</span>", unsafe_allow_html=True)
                 cols[4].markdown("🔪 Cần mổ" if row.get("surgery_needed")==1 else "")
-                if cols[5].button("Xuất viện", key=f"dis_{row['id']}"):
+                cols[5].markdown("✅" if row.get("operated")==1 else "✗")
+                if cols[6].button("Xuất viện", key=f"dis_{row['id']}"):
                     discharge_patient(row["id"]); st.success(f"Đã xuất viện {row['name']}"); safe_rerun()
 
 # ======================
@@ -405,23 +485,36 @@ elif page == "Nhập BN":
                     dob_date = st.date_input("Chọn ngày sinh chi tiết", value=date(1980,1,1))
                 st.caption(f"Đã chọn: **{dob_date.strftime('%d/%m/%Y')}**")
 
-        # Ngày nhập viện: hiển thị dd/mm/yyyy + lịch popup
+        # Ngày nhập viện
         try:
             admission_date_ui = st.date_input("Ngày nhập viện", value=date.today(), format="DD/MM/YYYY")
         except TypeError:
             admission_date_ui = st.date_input("Ngày nhập viện", value=date.today())
             st.caption("Mẹo: Nhập theo dd/mm/yyyy. (Phiên bản Streamlit hiện tại không hỗ trợ format hiển thị)")
 
+        # ---- Thông tin điều trị ----
         severity = st.slider("Mức độ nặng (1 nhẹ → 5 nặng)", 1, 5, 2)
         planned_treatment_days = st.number_input("Thời gian điều trị dự kiến (ngày)", min_value=0, value=3)
         surgery_needed = st.checkbox("Cần phẫu thuật?")
+        diagnosis = st.text_input("📝 Chẩn đoán bệnh", value="", placeholder="VD: Viêm phổi cộng đồng / ĐTĐ typ 2...")
+        operated = st.checkbox("Đã phẫu thuật (nếu đã mổ)")
+
         meds = st.text_area("Thuốc chính")
         notes = st.text_area("Ghi chú")
 
+        st.markdown("---")
+        st.subheader("🧪 Chỉ định cận lâm sàng ban đầu (tùy chọn)")
+
+        options = [f"{t[0]} — {t[1]}" for t in COMMON_TESTS]
+        selected = st.multiselect("Chọn nhanh các chỉ định cần làm", options)
+        try:
+            scheduled_all = st.date_input("Ngày dự kiến thực hiện (áp dụng cho tất cả mục đã chọn)", value=date.today(), format="DD/MM/YYYY")
+        except TypeError:
+            scheduled_all = st.date_input("Ngày dự kiến thực hiện (áp dụng cho tất cả mục đã chọn)", value=date.today())
+
         submitted = st.form_submit_button("💾 Lưu bệnh nhân")
         if submitted:
-            # Quy tắc chọn DOB theo mức ưu tiên:
-            #   chi tiết > tuổi (nếu chọn) > năm sinh
+            # Quy tắc chọn DOB: chi tiết > tuổi > năm sinh
             if use_detail and dob_date:
                 dob_final = dob_date
             elif use_age and dob_age is not None:
@@ -437,21 +530,195 @@ elif page == "Nhập BN":
                 patient = {
                     "medical_id": medical_id.strip(),
                     "name": name.strip(),
-                    "dob": dob_final.strftime(DATE_FMT),              # lưu YYYY-MM-DD
+                    "dob": dob_final.strftime(DATE_FMT),
                     "ward": ward.strip(),
                     "bed": bed.strip(),
-                    "admission_date": admission_date_ui.strftime(DATE_FMT),  # lưu YYYY-MM-DD
+                    "admission_date": admission_date_ui.strftime(DATE_FMT),
                     "severity": int(severity),
                     "surgery_needed": surgery_needed,
                     "planned_treatment_days": int(planned_treatment_days),
                     "meds": meds.strip(),
                     "notes": notes.strip(),
+                    "diagnosis": diagnosis.strip(),
+                    "operated": operated,
                 }
-                add_patient(patient)
+                new_id = add_patient(patient)
+
+                # Orders từ checklist
+                if selected:
+                    today_str = date.today().strftime(DATE_FMT)
+                    scheduled_str = scheduled_all.strftime(DATE_FMT)
+                    text_to_tuple = {f"{t[0]} — {t[1]}": t for t in COMMON_TESTS}
+                    for sel in selected:
+                        ot, desc = text_to_tuple[sel]
+                        add_order({
+                            "patient_id": new_id,
+                            "order_type": ot,
+                            "description": desc,
+                            "date_ordered": today_str,
+                            "scheduled_date": scheduled_str,
+                            "status": "scheduled"
+                        })
+
                 st.success(
-                    f"✅ Đã thêm bệnh nhân • DOB lưu: {dob_final.strftime('%d/%m/%Y')} • Ngày nhập viện: {admission_date_ui.strftime('%d/%m/%Y')}"
+                    f"✅ Đã thêm BN • DOB: {dob_final.strftime('%d/%m/%Y')} • Nhập viện: {admission_date_ui.strftime('%d/%m/%Y')}"
+                    + (f" • Đã tạo {len(selected)} chỉ định" if selected else "")
                 )
                 safe_rerun()
+
+# ======================
+# Đi buồng
+# ======================
+elif page == "Đi buồng":
+    st.title("🚶‍♂️ Đi buồng (Ward round)")
+
+    # giữ trạng thái BN đang mở form khám
+    if "round_patient_id" not in st.session_state:
+        st.session_state.round_patient_id = None
+
+    # Chọn phòng
+    wards_df = query_df("SELECT DISTINCT ward FROM patients WHERE active=1 AND ward IS NOT NULL AND ward<>'' ORDER BY ward")
+    ward_options = wards_df["ward"].tolist() if not wards_df.empty else []
+    sel_ward = st.selectbox("Chọn phòng", ward_options if ward_options else ["(Chưa có phòng)"])
+
+    # Danh sách BN trong phòng
+    if ward_options:
+        df_room = query_df("SELECT * FROM patients WHERE active=1 AND ward=? ORDER BY bed, name", (sel_ward,))
+        if df_room.empty:
+            st.info("Phòng này chưa có BN đang điều trị.")
+        else:
+            st.subheader(f"📋 Danh sách BN phòng {sel_ward}")
+            # render bảng nhanh
+            table_rows = []
+            for r in df_room.to_dict(orient="records"):
+                age = calc_age(r.get("dob"))
+                d_in = days_between(r.get("admission_date"))
+                table_rows.append({
+                    "Mã BA": r["medical_id"],
+                    "Họ tên": r["name"],
+                    "Tuổi": age if age is not None else "",
+                    "Chẩn đoán": r.get("diagnosis","") or "",
+                    "Số ngày điều trị": d_in if d_in is not None else "",
+                    "Đã PT": "✅" if r.get("operated",0)==1 else "✗",
+                    "Ghi chú": r.get("notes","") or "",
+                    "ID": r["id"],
+                })
+            df_view = pd.DataFrame(table_rows)
+            st.dataframe(df_view.drop(columns=["ID"]), use_container_width=True, hide_index=True)
+
+            # nút mở form chi tiết
+            st.markdown("### Khám tại giường")
+            for r in df_room.to_dict(orient="records"):
+                c = st.columns([3,1,1,1,2,1])
+                age = calc_age(r.get("dob"))
+                c[0].markdown(f"**{r['name']}** — {r['medical_id']}  \n<span class='small'>Chẩn đoán: {r.get('diagnosis','')}</span>", unsafe_allow_html=True)
+                c[1].markdown(f"Tuổi: **{age if age is not None else ''}**")
+                d_in = days_between(r.get("admission_date"))
+                c[2].markdown(f"Ngày điều trị: **{d_in if d_in is not None else ''}**")
+                c[3].markdown("Đã PT: **✅**" if r.get("operated",0)==1 else "Đã PT: **✗**")
+                c[4].markdown(f"<span class='small'>{r.get('notes','')}</span>", unsafe_allow_html=True)
+                if c[5].button("Khám", key=f"round_{r['id']}"):
+                    st.session_state.round_patient_id = r["id"]
+                    st.rerun()
+
+    # Form khám nếu đã chọn BN
+    pid = st.session_state.round_patient_id
+    if pid:
+        st.markdown("---")
+        info = query_df("SELECT * FROM patients WHERE id=?", (pid,))
+        if info.empty:
+            st.warning("Không tìm thấy bệnh nhân."); st.session_state.round_patient_id=None
+        else:
+            p = info.iloc[0].to_dict()
+            st.subheader(f"🧑‍⚕️ Khám BN: {p['name']} ({p['medical_id']}) — Phòng {p.get('ward','')}, Giường {p.get('bed','')}")
+
+            with st.form("form_round"):
+                colA, colB = st.columns([1,1])
+                with colA:
+                    visit_day = st.date_input("Ngày khám", value=date.today())
+                with colB:
+                    operated_now = st.checkbox("Đã phẫu thuật", value=bool(p.get("operated",0)))
+                general_status = st.text_area("Tình trạng toàn thân", height=100)
+                system_exam = st.text_area("Khám bộ phận", height=140)
+                plan = st.text_area("Phương án điều trị tiếp", height=120)
+
+                st.markdown("#### 🧪 CLS thêm")
+                extra_opts = [f"{t[0]} — {t[1]}" for t in COMMON_TESTS]
+                extra_selected = st.multiselect("Chọn CLS", extra_opts)
+                extra_note = st.text_area("Diễn giải CLS / Lý do", placeholder="VD: tăng CRP, nghi nhiễm; kiểm tra HbA1c để đánh giá kiểm soát đường máu…")
+                try:
+                    extra_scheduled = st.date_input("Ngày dự kiến thực hiện CLS", value=date.today(), format="DD/MM/YYYY")
+                except TypeError:
+                    extra_scheduled = st.date_input("Ngày dự kiến thực hiện CLS", value=date.today())
+
+                b1, b2, b3 = st.columns([1,1,2])
+                save_round = b1.form_submit_button("💾 Lưu khám")
+                close_round = b2.form_submit_button("Đóng")
+
+            if close_round:
+                st.session_state.round_patient_id = None
+                st.rerun()
+
+            if save_round:
+                # cập nhật đã phẫu thuật nếu thay đổi
+                update_patient_operated(pid, operated_now)
+
+                # lưu ward_round
+                round_rec = {
+                    "patient_id": pid,
+                    "visit_date": visit_day.strftime(DATE_FMT),
+                    "general_status": general_status.strip(),
+                    "system_exam": system_exam.strip(),
+                    "plan": plan.strip(),
+                    "extra_tests": ", ".join(extra_selected) if extra_selected else "",
+                    "extra_tests_note": extra_note.strip(),
+                }
+                add_ward_round(round_rec)
+
+                # tạo orders cho CLS đã chọn
+                if extra_selected:
+                    today_str = date.today().strftime(DATE_FMT)
+                    sched_str = extra_scheduled.strftime(DATE_FMT)
+                    text_to_tuple = {f"{t[0]} — {t[1]}": t for t in COMMON_TESTS}
+                    for sel in extra_selected:
+                        ot, desc = text_to_tuple[sel]
+                        desc_full = desc if not extra_note.strip() else f"{desc} — {extra_note.strip()}"
+                        add_order({
+                            "patient_id": pid,
+                            "order_type": ot,
+                            "description": desc_full,
+                            "date_ordered": today_str,
+                            "scheduled_date": sched_str,
+                            "status": "scheduled"
+                        })
+
+                st.success("✅ Đã lưu nội dung khám đi buồng")
+                st.rerun()
+
+            # Lịch sử khám theo ngày
+            st.markdown("### 📅 Lịch sử khám")
+            hist_days = query_df("SELECT DISTINCT visit_date FROM ward_rounds WHERE patient_id=? ORDER BY visit_date DESC", (pid,))
+            if hist_days.empty:
+                st.info("Chưa có lịch sử đi buồng.")
+            else:
+                day_strs = hist_days["visit_date"].tolist()
+                sel_hist = st.selectbox("Chọn ngày để xem lại", day_strs)
+                hist = query_df("""
+                    SELECT * FROM ward_rounds
+                    WHERE patient_id=? AND visit_date=?
+                    ORDER BY id DESC
+                """, (pid, sel_hist))
+                for i, r in hist.iterrows():
+                    st.markdown(f"**Lần ghi #{r['id']} — {r['visit_date']}**")
+                    st.write("**Tình trạng toàn thân:**", r["general_status"] or "—")
+                    st.write("**Khám bộ phận:**", r["system_exam"] or "—")
+                    st.write("**Phương án điều trị:**", r["plan"] or "—")
+                    if r["extra_tests"]:
+                        st.write("**CLS thêm:**", r["extra_tests"])
+                    if r["extra_tests_note"]:
+                        st.write("**Diễn giải CLS:**", r["extra_tests_note"])
+                    st.caption(f"🕒 Tạo lúc: {r['created_at']}")
+                    st.markdown("---")
 
 # ======================
 # Lịch XN/Chụp
@@ -501,7 +768,8 @@ elif page == "Lịch XN/Chụp":
                 options=patients_df["id"],
                 format_func=lambda x: f"{patients_df[patients_df['id']==x]['medical_id'].values[0]} - {patients_df[patients_df['id']==x]['name'].values[0]} ({patients_df[patients_df['id']==x]['ward'].values[0]})"
             )
-            order_type = st.selectbox("Loại", ["XN máu","X-quang","CT","Siêu âm","Khác"])
+            custom_types = ["XN máu","X-quang","CT","Siêu âm","Khác"]
+            order_type = st.selectbox("Loại", sorted(set(custom_types + [t[0] for t in COMMON_TESTS])))
             desc = st.text_area("Mô tả")
             scheduled = st.date_input("Ngày dự kiến", value=date.today())
             submitted2 = st.form_submit_button("➕ Thêm chỉ định")
@@ -538,7 +806,10 @@ elif page == "Tìm kiếm & Lịch sử":
             for r in df.to_dict(orient="records"):
                 st.subheader(f"{r['medical_id']} - {r['name']}")
                 st.write(f"Phòng: {r.get('ward','')} | Giường: {r.get('bed','')}")
-                st.write(f"Ngày NV: {r.get('admission_date','')} | Mức độ: {r.get('severity','')} | Phẫu thuật: {'Có' if r.get('surgery_needed',0)==1 else 'Không'} | Active: {r['active']}")
+                chandoan = r.get('diagnosis') or ''
+                st.write(f"Ngày NV: {r.get('admission_date','')} | Mức độ: {r.get('severity','')} | Phẫu thuật: {'Có' if r.get('surgery_needed',0)==1 else 'Không'} | Đã mổ: {'Có' if r.get('operated',0)==1 else 'Chưa'} | Active: {r['active']}")
+                if chandoan:
+                    st.write(f"📝 Chẩn đoán: {chandoan}")
                 st.write("Ghi chú:", r.get("notes",""))
                 ords = query_df("SELECT * FROM orders WHERE patient_id=? ORDER BY scheduled_date DESC", (r["id"],))
                 if not ords.empty:
