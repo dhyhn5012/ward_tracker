@@ -402,9 +402,9 @@ def dashboard_stats(filters: Dict[str, Any]) -> Dict[str, Any]:
     if filters.get("ward") and filters["ward"] != "Tất cả":
         base_active += " AND ward=?"
         params.append(filters["ward"])
-    if filters.get("sev_min", 1) > 1:
-        base_active += " AND severity>=?"
-        params.append(filters["sev_min"])
+    # if filters.get("sev_min", 1) > 1:
+    #     base_active += " AND severity>=?"
+    #     params.append(filters["sev_min"])
 
     df_active = query_df(base_active, tuple(params))
     total_active = len(df_active)
@@ -588,8 +588,8 @@ if page == "Trang chủ":
     f_col1, f_col2, f_col3 = st.columns([1, 1, 2])
     with f_col1:
         ward_filter = st.selectbox("Lọc theo phòng", ward_list, index=0)
-    with f_col2:
-        sev_min = st.slider("Mức độ nặng tối thiểu", 1, 5, 1)
+    # with f_col2:
+    #     sev_min = st.slider("Mức độ nặng tối thiểu", 1, 5, 1)
     with f_col3:
         st.markdown(
             "<div class='small'>Gợi ý: dùng bộ lọc để xem nhanh khoa/phòng hoặc nhóm BN nặng.</div>",
@@ -597,7 +597,7 @@ if page == "Trang chủ":
         )
 
     # Tính toán thống kê
-    stats = dashboard_stats({"ward": ward_filter, "sev_min": sev_min})
+    stats = dashboard_stats({"ward": ward_filter})
 
     # KPI
     c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -757,7 +757,6 @@ elif page == "Nhập BN":
 
         # Khối 3: Thông tin điều trị
         severity = st.slider("Mức độ nặng (1 nhẹ → 5 nặng)", 1, 5, 2)
-        planned_treatment_days = st.number_input("Thời gian điều trị dự kiến (ngày)", min_value=0, value=3)
         surgery_needed = st.checkbox("Cần phẫu thuật?")
         diagnosis = st.text_input("📝 Chẩn đoán bệnh", value="", placeholder="VD: Viêm phổi cộng đồng / ĐTĐ typ 2...")
         operated = st.checkbox("Đã phẫu thuật (nếu đã mổ)")
@@ -803,7 +802,7 @@ elif page == "Nhập BN":
                     "admission_date": admission_date_ui.strftime(DATE_FMT),
                     "severity": int(severity),
                     "surgery_needed": surgery_needed,
-                    "planned_treatment_days": int(planned_treatment_days),
+                    "planned_treatment_days":None,
                     "meds": meds.strip(),
                     "notes": notes.strip(),
                     "diagnosis": diagnosis.strip(),
