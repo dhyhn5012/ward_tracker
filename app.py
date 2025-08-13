@@ -263,7 +263,55 @@ def load_sample_data():
                "status":"scheduled"})
 
 # ======================
-# Tính toán Dashboard (đã bỏ mọi logic severity)
+# Điều hướng: PAGES + key để chuyển trang bằng code
+# ======================
+PAGES = [
+    "Trang chủ",
+    "Nhập BN",
+    "Đi buồng",
+    "Lịch XN/Chụp",
+    "Tìm kiếm & Lịch sử",
+    "Chỉnh sửa BN",
+    "Báo cáo",
+    "Cài đặt / Demo",
+]
+
+def go_edit(pid: int):
+    """Chuyển sang trang Chỉnh sửa BN và nạp sẵn bệnh nhân pid."""
+    st.session_state.active_page = "Chỉnh sửa BN"
+    st.session_state.edit_patient_id = int(pid)
+    safe_rerun()
+
+# ======================
+# Khởi tạo
+# ======================
+init_db()
+
+# ======================
+# Bảo vệ đơn giản bằng mật khẩu (tuỳ chọn)
+# ======================
+if APP_PASSWORD:
+    pw = st.sidebar.text_input("🔐 Mật khẩu ứng dụng", type="password")
+    if pw != APP_PASSWORD:
+        st.sidebar.warning("Nhập mật khẩu để truy cập ứng dụng")
+        st.stop()
+
+# ======================
+# Sidebar
+# ======================
+st.sidebar.title("🩺 Menu")
+if "active_page" not in st.session_state:
+    st.session_state.active_page = "Trang chủ"
+
+page = st.sidebar.radio(
+    "Chọn trang",
+    PAGES,
+    index=PAGES.index(st.session_state.active_page),
+    key="active_page"
+)
+
+# ======================
+# Trang chủ
 # ======================
 def dashboard_stats(filters: Dict[str, Any]) -> Dict[str, Any]:
     base_active = "SELECT * FROM patients WHERE active=1"
@@ -312,9 +360,6 @@ def dashboard_stats(filters: Dict[str, Any]) -> Dict[str, Any]:
         "df_orders": df_orders,
     }
 
-# ======================
-# Thành phần UI nhỏ (biểu đồ)
-# ======================
 def kpi(title: str, value: Any):
     st.markdown(f"""
         <div class="kpi">
@@ -349,42 +394,6 @@ def orders_status_chart(df_orders: pd.DataFrame):
     )
     st.altair_chart(chart, use_container_width=True)
 
-# ======================
-# Khởi tạo
-# ======================
-init_db()
-
-# ======================
-# Bảo vệ đơn giản bằng mật khẩu (tuỳ chọn)
-# ======================
-if APP_PASSWORD:
-    pw = st.sidebar.text_input("🔐 Mật khẩu ứng dụng", type="password")
-    if pw != APP_PASSWORD:
-        st.sidebar.warning("Nhập mật khẩu để truy cập ứng dụng")
-        st.stop()
-
-# ======================
-# Sidebar
-# ======================
-st.sidebar.title("🩺 Menu")
-page = st.sidebar.radio(
-    "Chọn trang",
-    [
-        "Trang chủ",
-        "Nhập BN",
-        "Đi buồng",
-        "Lịch XN/Chụp",
-        "Tìm kiếm & Lịch sử",
-        "Chỉnh sửa BN",   # Trang sửa riêng
-        "Báo cáo",
-        "Cài đặt / Demo",
-    ],
-    index=0
-)
-
-# ======================
-# Trang chủ
-# ======================
 if page == "Trang chủ":
     st.title("📊 Dashboard — Theo dõi bệnh nhân")
 
@@ -424,15 +433,18 @@ if page == "Trang chủ":
                     "diagnosis":"Chẩn đoán","notes":"Ghi chú","operated":"Đã phẫu thuật"
                 }), use_container_width=True, hide_index=True
             )
+            # --- Hàng action cho từng BN (đÃ LINK CHỈNH SỬA) ---
             for row in df_active.to_dict(orient="records"):
-                cols = st.columns([1,3,1,1,1,1])
+                cols = st.columns([1,3,1,1,1,1,1])  # thêm 1 cột cho nút Chỉnh sửa
                 cols[0].markdown(f"**{row['medical_id']}**")
                 diag_txt = f"<br/><span class='small'>Chẩn đoán: {row.get('diagnosis','')}</span>" if row.get("diagnosis") else ""
                 cols[1].markdown(f"**{row['name']}**  \n<span class='small'>{row.get('notes','')}</span>{diag_txt}", unsafe_allow_html=True)
                 cols[2].markdown(f"{row.get('ward','')}/{row.get('bed','') or ''}")
                 cols[3].markdown("🔪 Cần mổ" if row.get("surgery_needed")==1 else "")
                 cols[4].markdown("✅" if row.get("operated")==1 else "✗")
-                if cols[5].button("Xuất viện", key=f"dis_{row['id']}"):
+                if cols[5].button("✏️ Chỉnh sửa", key=f"edit_home_{row['id']}"):
+                    go_edit(row["id"])
+                if cols[6].button("Xuất viện", key=f"dis_{row['id']}"):
                     discharge_patient(row["id"]); st.success(f"Đã xuất viện {row['name']}"); safe_rerun()
 
 # ======================
@@ -586,7 +598,7 @@ elif page == "Đi buồng":
 
             st.markdown("### Khám tại giường")
             for r in df_room.to_dict(orient="records"):
-                c = st.columns([3,1,1,1,2,1])
+                c = st.columns([3,1,1,1,2,1,1])
                 age = calc_age(r.get("dob"))
                 c[0].markdown(f"**{r['name']}** — {r['medical_id']}  \n<span class='small'>Chẩn đoán: {r.get('diagnosis','')}</span>", unsafe_allow_html=True)
                 c[1].markdown(f"Tuổi: **{age if age is not None else ''}**")
@@ -597,6 +609,8 @@ elif page == "Đi buồng":
                 if c[5].button("Khám", key=f"round_{r['id']}"):
                     st.session_state.round_patient_id = r["id"]
                     st.rerun()
+                if c[6].button("✏️ Sửa", key=f"round_edit_{r['id']}"):
+                    go_edit(r["id"])
 
     pid = st.session_state.round_patient_id
     if pid:
@@ -791,47 +805,18 @@ elif page == "Tìm kiếm & Lịch sử":
 
                 col1, col2, col3 = st.columns([1, 1, 1])
                 if col1.button("✏️ Chỉnh sửa", key=f"edit_{r['id']}"):
-                    st.session_state.edit_patient_id = r['id']
-                    st.experimental_rerun()
-
+                    go_edit(r['id'])
                 if col2.button("🗑️ Xóa", key=f"delete_{r['id']}"):
                     _exec("DELETE FROM patients WHERE id=?", (r['id'],))
                     st.success(f"Đã xóa bệnh nhân {r['name']}")
-                    st.experimental_rerun()
-
+                    safe_rerun()
                 if col3.button("Xuất viện", key=f"dis2_{r['id']}"):
                     discharge_patient(r["id"])
                     st.success("✅ Đã xuất viện")
                     safe_rerun()
 
-    # Form chỉnh sửa thông tin bệnh nhân (rút gọn, không còn severity)
-    if "edit_patient_id" in st.session_state:
-        patient_id = st.session_state.edit_patient_id
-        patient_info = query_df("SELECT * FROM patients WHERE id=?", (patient_id,)).iloc[0].to_dict()
-
-        st.subheader(f"Chỉnh sửa thông tin bệnh nhân: {patient_info['name']}")
-
-        with st.form("form_edit_patient"):
-            name = st.text_input("Họ tên", value=patient_info['name'])
-            ward = st.text_input("Phòng", value=patient_info['ward'])
-            bed = st.text_input("Giường", value=patient_info['bed'])
-            admission_date = st.date_input("Ngày nhập viện", value=datetime.strptime(patient_info['admission_date'], DATE_FMT).date())
-            discharge_date = st.date_input("Ngày xuất viện", value=datetime.strptime(patient_info['discharge_date'], DATE_FMT).date() if patient_info['discharge_date'] else date.today())
-            diagnosis = st.text_input("Chẩn đoán", value=patient_info['diagnosis'])
-            notes = st.text_area("Ghi chú", value=patient_info['notes'])
-            submitted_edit = st.form_submit_button("💾 Lưu thay đổi")
-
-        if submitted_edit:
-            _exec(
-                "UPDATE patients SET name=?, ward=?, bed=?, admission_date=?, discharge_date=?, diagnosis=?, notes=? WHERE id=?",
-                (name, ward, bed, admission_date.strftime(DATE_FMT), discharge_date.strftime(DATE_FMT) if discharge_date else None, diagnosis, notes, patient_id)
-            )
-            st.success("Cập nhật thông tin thành công.")
-            del st.session_state.edit_patient_id
-            st.experimental_rerun()
-
 # ======================
-# Chỉnh sửa BN (trang riêng, cũng đã bỏ severity)
+# Chỉnh sửa BN (trang riêng, đã link từ Trang chủ & các nơi khác)
 # ======================
 elif page == "Chỉnh sửa BN":
     st.title("✏️ Chỉnh sửa bệnh nhân")
@@ -844,6 +829,7 @@ elif page == "Chỉnh sửa BN":
     else:
         df_pat = query_df("SELECT id, medical_id, name, ward FROM patients ORDER BY active DESC, ward, name")
 
+    # Lọc nhanh theo tên/mã (tuỳ chọn)
     if not df_pat.empty and name_query:
         q = f"%{name_query.strip()}%"
         df_pat = query_df(
@@ -859,10 +845,19 @@ elif page == "Chỉnh sửa BN":
         st.info("Chưa có bệnh nhân phù hợp để chỉnh sửa.")
         st.stop()
 
+    options = df_pat["id"].tolist()
+    # Nếu có sẵn edit_patient_id thì chọn đúng index đó
+    if "edit_patient_id" in st.session_state and st.session_state.edit_patient_id in options:
+        default_index = options.index(int(st.session_state.edit_patient_id))
+    else:
+        default_index = 0
+
     pid = st.selectbox(
         "Chọn bệnh nhân",
-        options=df_pat["id"].tolist(),
-        format_func=lambda x: f"{df_pat[df_pat['id']==x]['medical_id'].values[0] or '—'} - {df_pat[df_pat['id']==x]['name'].values[0]} (Phòng {df_pat[df_pat['id']==x]['ward'].values[0] or '—'})"
+        options=options,
+        index=default_index,
+        format_func=lambda x: f"{df_pat[df_pat['id']==x]['medical_id'].values[0] or '—'} - {df_pat[df_pat['id']==x]['name'].values[0]} (Phòng {df_pat[df_pat['id']==x]['ward'].values[0] or '—'})",
+        key="edit_select_pid"
     )
 
     info_df = query_df("SELECT * FROM patients WHERE id=?", (int(pid),))
@@ -942,19 +937,20 @@ elif page == "Chỉnh sửa BN":
                 notes.strip(),
                 int(pid),
             )
-)
+        )
         st.success("✅ Đã lưu thay đổi.")
-        st.experimental_rerun()
+        # Ở lại trang này để chỉnh tiếp
+        # safe_rerun()
 
     if do_discharge:
         discharge_patient(int(pid))
         st.success("✅ Đã xuất viện.")
-        st.experimental_rerun()
+        # safe_rerun()
 
     if do_delete:
         _exec("DELETE FROM patients WHERE id=?", (int(pid),))
         st.success("🗑️ Đã xoá bệnh nhân.")
-        st.experimental_rerun()
+        # safe_rerun()
 
 # ======================
 # Báo cáo
