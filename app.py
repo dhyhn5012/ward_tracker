@@ -1,4 +1,3 @@
-
 # app.py
 # -*- coding: utf-8 -*-
 import os
@@ -29,7 +28,7 @@ CUSTOM_CSS = """
 .kpi .v{font-weight:700;font-size:1.6rem;margin-top:6px}
 :root{--text-color-secondary:#6b7280;--background-color: rgba(255,255,255,0.6)}
 [data-theme="dark"] :root{--text-color-secondary:#9ca3af;--background-color:rgba(255,255,255,0.04)}
-.block-container {padding-top: 1.2rem; padding-bottom: 2 rem;}
+.block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
 hr {margin: 0.6rem 0 1rem 0;}
 .small {font-size: 0.9rem; color: var(--text-color-secondary);}
 .badge {display:inline-block;padding:2px 8px;border-radius:999px;font-size:0.75rem;border:1px solid rgba(0,0,0,0.1)}
@@ -130,6 +129,13 @@ def init_db() -> None:
                 conn.commit()
             except Exception:
                 pass
+
+        # --- Clean up: set default severity for old rows (tránh None) ---
+        try:
+            conn.execute("UPDATE patients SET severity=0 WHERE severity IS NULL")
+            conn.commit()
+        except Exception:
+            pass
 
 def _exec(query: str, params: tuple = ()) -> None:
     with get_conn() as conn:
@@ -259,7 +265,7 @@ def load_sample_data():
                "status":"scheduled"})
 
 # ======================
-# Tính toán Dashboard
+# Tính toán Dashboard (đÃ ép kiểu severity an toàn)
 # ======================
 def dashboard_stats(filters: Dict[str, Any]) -> Dict[str, Any]:
     base_active = "SELECT * FROM patients WHERE active=1"
@@ -279,13 +285,20 @@ def dashboard_stats(filters: Dict[str, Any]) -> Dict[str, Any]:
 
     if total_active > 0:
         df_active = df_active.copy()
+        # ép kiểu severity an toàn (None/NaN -> 0)
+        df_active["severity"] = pd.to_numeric(df_active["severity"], errors="coerce").fillna(0).astype(int)
         df_active["days_in_hospital"] = df_active["admission_date"].apply(lambda d: days_between(d))
         avg_days = round(df_active["days_in_hospital"].mean(), 1)
     else:
         avg_days = 0
 
-    count_severe = int(query_df("SELECT COUNT(*) as c FROM patients WHERE active=1 AND severity>=4")["c"][0]) if total_active>=0 else 0
-    count_wait_surg = int(query_df("SELECT COUNT(*) as c FROM patients WHERE active=1 AND surgery_needed=1")["c"][0]) if total_active>=0 else 0
+    count_severe = int(query_df(
+        "SELECT COUNT(*) as c FROM patients WHERE active=1 AND IFNULL(severity,0)>=4"
+    )["c"][0]) if total_active>=0 else 0
+
+    count_wait_surg = int(query_df(
+        "SELECT COUNT(*) as c FROM patients WHERE active=1 AND surgery_needed=1"
+    )["c"][0]) if total_active>=0 else 0
 
     df_orders = query_df("""
         SELECT o.*, p.name, p.ward FROM orders o
@@ -380,9 +393,19 @@ if APP_PASSWORD:
 st.sidebar.title("🩺 Menu")
 page = st.sidebar.radio(
     "Chọn trang",
-    ["Trang chủ", "Nhập BN", "Đi buồng", "Lịch XN/Chụp", "Tìm kiếm & Lịch sử", "Báo cáo", "Cài đặt / Demo"],
+    [
+        "Trang chủ",
+        "Nhập BN",
+        "Đi buồng",
+        "Lịch XN/Chụp",
+        "Tìm kiếm & Lịch sử",
+        "Chỉnh sửa BN",        # <— THÊM TRANG MỚI
+        "Báo cáo",
+        "Cài đặt / Demo",
+    ],
     index=0
 )
+
 
 # ======================
 # Trang chủ
@@ -392,12 +415,11 @@ if page == "Trang chủ":
 
     df_all_wards = query_df("SELECT DISTINCT ward FROM patients WHERE ward IS NOT NULL AND ward<>'' ORDER BY ward")
     ward_list = ["Tất cả"] + (df_all_wards["ward"].tolist() if not df_all_wards.empty else [])
-    f_col1, f_col2, f_col3 = st.columns([1,1,2])
+    f_col1, f_col2 = st.columns([1,2])
     with f_col1: ward_filter = st.selectbox("Lọc theo phòng", ward_list, index=0)
-    with f_col2: sev_min = st.slider("Mức độ nặng tối thiểu", 1, 5, 1)
-    with f_col3: st.markdown("<div class='small'>Gợi ý: dùng bộ lọc để xem nhanh khoa/phòng hoặc nhóm BN nặng.</div>", unsafe_allow_html=True)
+    with f_col2: st.markdown("<div class='small'>Gợi ý: dùng bộ lọc để xem nhanh khoa/phòng.</div>", unsafe_allow_html=True)
 
-    stats = dashboard_stats({"ward": ward_filter, "sev_min": sev_min})
+    stats = dashboard_stats({"ward": ward_filter})
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1: kpi("BN đang điều trị", stats["total_active"])
@@ -436,8 +458,17 @@ if page == "Trang chủ":
                 diag_txt = f"<br/><span class='small'>Chẩn đoán: {row.get('diagnosis','')}</span>" if row.get("diagnosis") else ""
                 cols[1].markdown(f"**{row['name']}**  \n<span class='small'>{row.get('notes','')}</span>{diag_txt}", unsafe_allow_html=True)
                 cols[2].markdown(f"{row.get('ward','')}/{row.get('bed','') or ''}")
-                sev_badge = "danger" if int(row.get("severity",0))>=4 else ("warn" if int(row.get("severity",0))==3 else "ok")
-                cols[3].markdown(f"<span class='badge {sev_badge}'>Sev {row.get('severity')}</span>", unsafe_allow_html=True)
+
+                # ==== SAFE: tính badge mức độ không bị lỗi khi severity None/NaN/chuỗi lạ ====
+                sev_raw = row.get("severity")
+                try:
+                    sev = 0 if sev_raw is None or pd.isna(sev_raw) else int(sev_raw)
+                except (TypeError, ValueError):
+                    sev = 0
+                sev_badge = "danger" if sev >= 4 else ("warn" if sev == 3 else "ok")
+                cols[3].markdown(f"<span class='badge {sev_badge}'>Sev {sev}</span>", unsafe_allow_html=True)
+                # ===========================================================================
+
                 cols[4].markdown("🔪 Cần mổ" if row.get("surgery_needed")==1 else "")
                 cols[5].markdown("✅" if row.get("operated")==1 else "✗")
                 if cols[6].button("Xuất viện", key=f"dis_{row['id']}"):
@@ -454,7 +485,7 @@ elif page == "Nhập BN":
         c1, c2, c3 = st.columns([1,1,1])
 
         with c1:
-            medical_id = st.text_input("Mã bệnh án *")
+            medical_id = st.text_input("Mã bệnh án (không bắt buộc)")
             ward = st.text_input("Phòng")
             bed = st.text_input("Giường")
 
@@ -494,9 +525,9 @@ elif page == "Nhập BN":
             st.caption("Mẹo: Nhập theo dd/mm/yyyy. (Phiên bản Streamlit hiện tại không hỗ trợ format hiển thị)")
 
         # ---- Thông tin điều trị ----
-        severity = st.slider("Mức độ nặng (1 nhẹ → 5 nặng)", 1, 5, 2)
         planned_treatment_days = st.number_input("Thời gian điều trị dự kiến (ngày)", min_value=0, value=3)
         surgery_needed = st.checkbox("Cần phẫu thuật?")
+        severity = st.slider("Mức độ nặng (1–5)", 1, 5, value=3)  # <--- thêm slider mức độ nặng
         diagnosis = st.text_input("📝 Chẩn đoán bệnh", value="", placeholder="VD: Viêm phổi cộng đồng / ĐTĐ typ 2...")
         operated = st.checkbox("Đã phẫu thuật (nếu đã mổ)")
 
@@ -525,17 +556,17 @@ elif page == "Nhập BN":
                 yr = int(dob_year)
                 dob_final = date(yr, 1, 1)
 
-            if not medical_id or not name:
-                st.error("Vui lòng nhập tối thiểu Mã bệnh án và Họ tên.")
+            if not name:
+                st.error("Vui lòng nhập tối thiểu Họ tên.")
             else:
                 patient = {
-                    "medical_id": medical_id.strip(),
+                    "medical_id": medical_id.strip() if medical_id else None,
                     "name": name.strip(),
                     "dob": dob_final.strftime(DATE_FMT),
                     "ward": ward.strip(),
                     "bed": bed.strip(),
                     "admission_date": admission_date_ui.strftime(DATE_FMT),
-                    "severity": int(severity),
+                    "severity": int(severity),                 # <--- ghi severity vào DB
                     "surgery_needed": surgery_needed,
                     "planned_treatment_days": int(planned_treatment_days),
                     "meds": meds.strip(),
@@ -817,10 +848,73 @@ elif page == "Tìm kiếm & Lịch sử":
                     st.table(ords[["order_type","description","scheduled_date","status","result_date"]])
                 else:
                     st.write("Chưa có chỉ định.")
-                if st.button("Xuất viện", key=f"dis2_{r['id']}"):
+
+                col1, col2, col3 = st.columns([1, 1, 1])
+                if col1.button("✏️ Chỉnh sửa", key=f"edit_{r['id']}"):
+                    st.session_state.edit_patient_id = r['id']
+                    st.experimental_rerun()
+
+                if col2.button("🗑️ Xóa", key=f"delete_{r['id']}"):
+                    _exec("DELETE FROM patients WHERE id=?", (r['id'],))
+                    st.success(f"Đã xóa bệnh nhân {r['name']}")
+                    st.experimental_rerun()
+
+                if col3.button("Xuất viện", key=f"dis2_{r['id']}"):
                     discharge_patient(r["id"])
                     st.success("✅ Đã xuất viện")
                     safe_rerun()
+
+    # Form chỉnh sửa thông tin bệnh nhân
+    if "edit_patient_id" in st.session_state:
+        patient_id = st.session_state.edit_patient_id
+        patient_info = query_df("SELECT * FROM patients WHERE id=?", (patient_id,)).iloc[0].to_dict()
+
+        st.subheader(f"Chỉnh sửa thông tin bệnh nhân: {patient_info['name']}")
+
+        # đảm bảo giá trị mặc định slider nằm trong [1..5]
+        sev_default = int(patient_info.get('severity') or 1)
+        if sev_default < 1: sev_default = 1
+        if sev_default > 5: sev_default = 5
+
+        with st.form("form_edit_patient"):
+            name = st.text_input("Họ tên", value=patient_info['name'])
+            ward = st.text_input("Phòng", value=patient_info['ward'])
+            bed = st.text_input("Giường", value=patient_info['bed'])
+            admission_date = st.date_input("Ngày nhập viện", value=datetime.strptime(patient_info['admission_date'], DATE_FMT).date())
+            discharge_date = st.date_input("Ngày xuất viện", value=datetime.strptime(patient_info['discharge_date'], DATE_FMT).date() if patient_info['discharge_date'] else date.today())
+            severity = st.slider("Mức độ nặng (1-5)", 1, 5, value=sev_default)
+            diagnosis = st.text_input("Chẩn đoán", value=patient_info['diagnosis'])
+            notes = st.text_area("Ghi chú", value=patient_info['notes'])
+            submitted_edit = st.form_submit_button("💾 Lưu thay đổi")
+
+        if submitted_edit:
+            _exec(
+                "UPDATE patients SET name=?, ward=?, bed=?, admission_date=?, discharge_date=?, severity=?, diagnosis=?, notes=? WHERE id=?",
+                (name, ward, bed, admission_date.strftime(DATE_FMT), discharge_date.strftime(DATE_FMT) if discharge_date else None, int(severity), diagnosis, notes, patient_id)
+            )
+            st.success("Cập nhật thông tin thành công.")
+            del st.session_state.edit_patient_id
+            st.experimental_rerun()
+
+    # Hiển thị bệnh nhân xuất viện trong ngày
+    st.markdown("---")
+    st.subheader("📋 Bệnh nhân xuất viện trong ngày")
+    today_str = date.today().strftime(DATE_FMT)
+    discharged_today = query_df("""
+        SELECT * FROM patients
+        WHERE discharge_date = ?
+        ORDER BY discharge_date DESC
+    """, (today_str,))
+
+    if discharged_today.empty:
+        st.info("Không có bệnh nhân xuất viện hôm nay.")
+    else:
+        st.dataframe(
+            discharged_today[["medical_id", "name", "ward", "bed", "discharge_date"]].rename(columns={
+                "medical_id": "Mã BA", "name": "Họ tên", "ward": "Phòng", "bed": "Giường", "discharge_date": "Ngày xuất viện"
+            }),
+            use_container_width=True, hide_index=True
+        )
 
 # ======================
 # Báo cáo
@@ -887,4 +981,233 @@ elif page == "Cài đặt / Demo":
                 with open(DB_PATH, "rb") as f:
                     data = f.read()
                 st.download_button("Tải file DB", data=data, file_name=DB_PATH, mime="application/x-sqlite3")
- 
+
+
+# ======================
+# Chỉnh sửa BN (trang riêng)
+# ======================
+elif page == "Chỉnh sửa BN":
+    st.title("✏️ Chỉnh sửa bệnh nhân")
+
+    # Bộ lọc nhanh
+    show_only_active = st.checkbox("Chỉ hiển thị BN đang điều trị (active=1)", value=True)
+    name_query = st.text_input("Tìm theo tên/mã bệnh án (gõ để lọc nhanh)")
+
+    # Lấy danh sách BN
+    if show_only_active:
+        df_pat = query_df("SELECT id, medical_id, name, ward FROM patients WHERE active=1 ORDER BY ward, name")
+    else:
+        df_pat = query_df("SELECT id, medical_id, name, ward FROM patients ORDER BY active DESC, ward, name")
+
+    if not df_pat.empty and name_query:
+        q = f"%{name_query.strip()}%"
+        df_pat = query_df(
+            """
+            SELECT id, medical_id, name, ward FROM patients
+            WHERE (medical_id LIKE ? OR name LIKE ?) AND (? = 1 OR active = 1)
+            ORDER BY ward, name
+            """,
+            (q, q, 1 if show_only_active else 0)
+        )
+
+    if df_pat.empty:
+        st.info("Chưa có bệnh nhân phù hợp để chỉnh sửa.")
+        st.stop()
+
+    # Chọn bệnh nhân cần chỉnh sửa
+    pid = st.selectbox(
+        "Chọn bệnh nhân",
+        options=df_pat["id"].tolist(),
+        format_func=lambda x: f"{df_pat[df_pat['id']==x]['medical_id'].values[0] or '—'} - {df_pat[df_pat['id']==x]['name'].values[0]} (Phòng {df_pat[df_pat['id']==x]['ward'].values[0] or '—'})"
+    )
+
+    # Tải thông tin chi tiết
+    info_df = query_df("SELECT * FROM patients WHERE id=?", (int(pid),))
+    if info_df.empty:
+        st.error("Không tìm thấy bệnh nhân.")
+        st.stop()
+    p = info_df.iloc[0].to_dict()
+
+    st.markdown("---")
+    st.subheader(f"Đang chỉnh sửa: **{p.get('medical_id') or '—'} — {p.get('name', '')}**")
+
+    # Giá trị mặc định an toàn cho ngày
+    def _safe_date(s: Optional[str], fallback: date) -> date:
+        try:
+            return datetime.strptime(s, DATE_FMT).date() if s else fallback
+        except Exception:
+            return fallback
+
+    admission_default  = _safe_date(p.get("admission_date"), date.today())
+    discharge_default  = _safe_date(p.get("discharge_date"), date.today()) if p.get("discharge_date") else None
+
+    # Giá trị mặc định an toàn cho severity
+    sev_default = int(p.get("severity") or 1)
+    if sev_default < 1: sev_default = 1
+    if sev_default > 5: sev_default = 5
+
+    with st.form("form_edit_patient_full"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            medical_id = st.text_input("Mã bệnh án", value=p.get("medical_id") or "")
+            name       = st.text_input("Họ tên *", value=p.get("name") or "")
+        with col2:
+            ward       = st.text_input("Phòng", value=p.get("ward") or "")
+            bed        = st.text_input("Giường", value=p.get("bed") or "")
+        with col3:
+            severity   = st.slider("Mức độ nặng (1–5)", 1, 5, value=sev_default)
+            surgery_needed = st.checkbox("Cần phẫu thuật?", value=bool(p.get("surgery_needed",0)))
+            operated       = st.checkbox("Đã phẫu thuật", value=bool(p.get("operated",0)))
+
+        try:
+            admission_date = st.date_input("Ngày nhập viện", value=admission_default, format="DD/MM/YYYY")
+        except TypeError:
+            admission_date = st.date_input("Ngày nhập viện", value=admission_default)
+
+        # Cho phép bỏ trống ngày xuất viện
+        discharge_enable = st.checkbox("Có ngày xuất viện?", value=bool(discharge_default))
+        if discharge_enable:
+            try:
+                discharge_date = st.date_input("Ngày xuất viện", value=discharge_default or date.today(), format="DD/MM/YYYY")
+            except TypeError:
+                discharge_date = st.date_input("Ngày xuất viện", value=discharge_default or date.today())
+        else:
+            discharge_date = None
+
+        diagnosis = st.text_input("📝 Chẩn đoán", value=p.get("diagnosis") or "")
+        notes     = st.text_area("Ghi chú", value=p.get("notes") or "")
+
+        c_save, c_dis, c_del = st.columns([1,1,1])
+        submitted = c_save.form_submit_button("💾 Lưu thay đổi")
+        do_discharge = c_dis.form_submit_button("🏁 Xuất viện (set active=0)")
+        do_delete = c_del.form_submit_button("🗑️ Xoá bệnh nhân")
+
+    # Hành động
+    if submitted:
+        if not name.strip():
+            st.error("Vui lòng nhập Họ tên.")
+            st.stop()
+        _exec(
+            """
+            UPDATE patients
+            SET medical_id=?, name=?, ward=?, bed=?,
+                admission_date=?, discharge_date=?,
+                severity=?, surgery_needed=?, operated=?,
+                diagnosis=?, notes=?
+            WHERE id=?
+            """,
+            (
+                medical_id.strip() or None,
+                name.strip(),
+                ward.strip(),
+                bed.strip(),
+                admission_date.strftime(DATE_FMT),
+                discharge_date.strftime(DATE_FMT) if discharge_date else None,
+                int(severity),
+                1 if surgery_needed else 0,
+                1 if operated else 0,
+                diagnosis.strip(),
+                notes.strip(),
+                int(pid),
+            )
+        )
+        st.success("✅ Đã lưu thay đổi.")
+        st.experimental_rerun()
+
+    if do_discharge:
+        discharge_patient(int(pid))
+        st.success("✅ Đã xuất viện.")
+        st.experimental_rerun()
+
+    if do_delete:
+        _exec("DELETE FROM patients WHERE id=?", (int(pid),))
+        st.success("🗑️ Đã xoá bệnh nhân.")
+        st.experimental_rerun()
+
+
+# ======================
+# Tìm kiếm nâng cao & Cập nhật thông tin bệnh nhân
+# ======================
+elif page == "Tìm kiếm nâng cao":
+    st.title("🔍 Tìm kiếm nâng cao")
+
+    # Form tìm kiếm
+    with st.form("form_search_patient"):
+        search_name = st.text_input("Tìm theo tên")
+        search_medical_id = st.text_input("Tìm theo mã bệnh án")
+        search_ward = st.text_input("Tìm theo phòng")
+        search_severity = st.slider("Mức độ nặng (1-5)", 1, 5, (1, 5))
+        submitted_search = st.form_submit_button("🔎 Tìm kiếm")
+
+    if submitted_search:
+        query = "SELECT * FROM patients WHERE 1=1"
+        params = []
+
+        if search_name:
+            query += " AND name LIKE ?"
+            params.append(f"%{search_name}%")
+
+        if search_medical_id:
+            query += " AND medical_id LIKE ?"
+            params.append(f"%{search_medical_id}%")
+
+        if search_ward:
+            query += " AND ward LIKE ?"
+            params.append(f"%{search_ward}%")
+
+        if search_severity:
+            query += " AND severity BETWEEN ? AND ?"
+            params.extend(search_severity)
+
+        results = query_df(query, tuple(params))
+
+        if results.empty:
+            st.warning("Không tìm thấy bệnh nhân phù hợp.")
+        else:
+            st.write(f"Tìm thấy {len(results)} bệnh nhân:")
+            for r in results.to_dict(orient="records"):
+                st.subheader(f"{r['medical_id']} - {r['name']}")
+                st.write(f"Phòng: {r.get('ward', '')} | Giường: {r.get('bed', '')}")
+                st.write(f"Ngày NV: {r.get('admission_date', '')} | Mức độ: {r.get('severity', '')}")
+                st.write(f"Chẩn đoán: {r.get('diagnosis', '')}")
+                st.write("Ghi chú:", r.get("notes", ""))
+
+                # Nút cập nhật và xóa
+                col1, col2 = st.columns([1, 1])
+                if col1.button("✏️ Cập nhật", key=f"update_{r['id']}"):
+                    st.session_state.update_patient_id = r['id']
+                    st.experimental_rerun()
+
+                if col2.button("🗑️ Xóa", key=f"delete_{r['id']}"):
+                    discharge_patient(r['id'])
+                    st.success(f"Đã xóa bệnh nhân {r['name']}")
+                    st.experimental_rerun()
+
+    # Form cập nhật thông tin bệnh nhân
+    if "update_patient_id" in st.session_state:
+        patient_id = st.session_state.update_patient_id
+        patient_info = query_df("SELECT * FROM patients WHERE id=?", (patient_id,)).iloc[0].to_dict()
+
+        st.subheader(f"Cập nhật thông tin bệnh nhân: {patient_info['name']}")
+
+        sev_default = int(patient_info.get('severity') or 1)
+        if sev_default < 1: sev_default = 1
+        if sev_default > 5: sev_default = 5
+
+        with st.form("form_update_patient"):
+            name = st.text_input("Họ tên", value=patient_info['name'])
+            ward = st.text_input("Phòng", value=patient_info['ward'])
+            bed = st.text_input("Giường", value=patient_info['bed'])
+            severity = st.slider("Mức độ nặng (1-5)", 1, 5, value=sev_default)
+            diagnosis = st.text_input("Chẩn đoán", value=patient_info['diagnosis'])
+            notes = st.text_area("Ghi chú", value=patient_info['notes'])
+            submitted_update = st.form_submit_button("💾 Lưu thay đổi")
+
+        if submitted_update:
+            _exec(
+                "UPDATE patients SET name=?, ward=?, bed=?, severity=?, diagnosis=?, notes=? WHERE id=?",
+                (name, ward, bed, int(severity), diagnosis, notes, patient_id)
+            )
+            st.success("Cập nhật thông tin thành công.")
+            del st.session_state.update_patient_id
+            st.experimental_rerun()
