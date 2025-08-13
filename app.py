@@ -449,7 +449,7 @@ def orders_status_chart(df_orders: pd.DataFrame):
 # Trang chủ
 # ======================
 if page == "Trang chủ":
-    st.title("📊 Dashboard — Theo dõi bệnh nhân")
+    st.title("📊 Theo dõi bệnh nhân")
 
     df_all_wards = query_df("SELECT DISTINCT ward FROM patients WHERE ward IS NOT NULL AND ward<>'' ORDER BY ward")
     ward_list = ["Tất cả"] + (df_all_wards["ward"].tolist() if not df_all_wards.empty else [])
