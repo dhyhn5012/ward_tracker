@@ -156,7 +156,7 @@ def add_patient(patient: Dict[str, Any]) -> int:
             patient.get("ward"),
             patient.get("bed"),
             patient.get("admission_date"),
-            patient.get("severity"),                 # có thể là None -> vẫn OK
+            patient.get("severity"),
             1 if patient.get("surgery_needed") else 0,
             patient.get("planned_treatment_days"),
             patient.get("meds"),
@@ -263,10 +263,11 @@ def load_sample_data():
                "status":"scheduled"})
 
 # ======================
-# Điều hướng: PAGES + key để chuyển trang bằng code
+# Điều hướng: PAGES + helper chuyển trang
 # ======================
 PAGES = [
     "Trang chủ",
+    "Tổng quan",            # <== TRANG MỚI
     "Nhập BN",
     "Đi buồng",
     "Lịch XN/Chụp",
@@ -303,15 +304,68 @@ st.sidebar.title("🩺 Menu")
 if "active_page" not in st.session_state:
     st.session_state.active_page = "Trang chủ"
 
-page = st.sidebar.radio(
-    "Chọn trang",
-    PAGES,
-    index=PAGES.index(st.session_state.active_page),
-    key="active_page"
-)
+default_index = PAGES.index(st.session_state.active_page) if st.session_state.active_page in PAGES else 0
+selected_page = st.sidebar.radio("Chọn trang", PAGES, index=default_index)
+st.session_state.active_page = selected_page
+page = selected_page
 
 # ======================
-# Trang chủ
+# Helper cho trang Tổng quan
+# ======================
+def _to_date(s: Optional[str]) -> Optional[date]:
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, DATE_FMT).date()
+    except Exception:
+        return None
+
+def week_range(today: date, offset_weeks: int = 0) -> Tuple[date, date]:
+    # Tuần tính từ Thứ Hai → Chủ Nhật
+    monday = today - timedelta(days=today.weekday())
+    monday = monday + timedelta(weeks=offset_weeks)
+    sunday = monday + timedelta(days=6)
+    return monday, sunday
+
+def patients_active_between(dstart: date, dend: date) -> pd.DataFrame:
+    # BN có mặt trong tuần nếu (admission <= dend) và (discharge is null hoặc discharge >= dstart)
+    df = query_df("SELECT * FROM patients")
+    if df.empty:
+        return df
+    df = df.copy()
+    df["ad"] = df["admission_date"].apply(_to_date)
+    df["dd"] = df["discharge_date"].apply(_to_date)
+    mask = (df["ad"].notna()) & (df["ad"] <= dend) & ((df["dd"].isna()) | (df["dd"] >= dstart))
+    return df[mask]
+
+def count_discharges_between(dstart: date, dend: date) -> int:
+    df = query_df("SELECT discharge_date FROM patients WHERE discharge_date IS NOT NULL")
+    if df.empty:
+        return 0
+    df["dd"] = df["discharge_date"].apply(_to_date)
+    return int(((df["dd"] >= dstart) & (df["dd"] <= dend)).sum())
+
+def count_orders_between(dstart: date, dend: date) -> int:
+    df = query_df("SELECT scheduled_date FROM orders")
+    if df.empty:
+        return 0
+    df["sd"] = df["scheduled_date"].apply(_to_date)
+    return int(((df["sd"] >= dstart) & (df["sd"] <= dend)).sum())
+
+def avg_days_treated_in_week(dstart: date, dend: date) -> float:
+    # Với mỗi BN hiện diện trong tuần: tính số ngày overlap của BN trong [dstart, dend]
+    df = patients_active_between(dstart, dend)
+    if df.empty:
+        return 0.0
+    def overlap_days(ad: Optional[date], dd: Optional[date]) -> int:
+        start = max(ad or dstart, dstart)
+        end   = min((dd or dend), dend)
+        return max(0, (end - start).days + 1)
+    ov = df.apply(lambda r: overlap_days(_to_date(r["admission_date"]), _to_date(r["discharge_date"])), axis=1)
+    return round(float(ov.mean()), 1)
+
+# ======================
+# Dashboard helpers (Trang chủ)
 # ======================
 def dashboard_stats(filters: Dict[str, Any]) -> Dict[str, Any]:
     base_active = "SELECT * FROM patients WHERE active=1"
@@ -334,10 +388,6 @@ def dashboard_stats(filters: Dict[str, Any]) -> Dict[str, Any]:
     else:
         avg_days = 0
 
-    count_wait_surg = int(query_df(
-        "SELECT COUNT(*) as c FROM patients WHERE active=1 AND surgery_needed=1"
-    )["c"][0]) if total_active>=0 else 0
-
     df_orders = query_df("""
         SELECT o.*, p.name, p.ward FROM orders o
         LEFT JOIN patients p ON o.patient_id=p.id
@@ -353,7 +403,7 @@ def dashboard_stats(filters: Dict[str, Any]) -> Dict[str, Any]:
         "total_active": total_active,
         "patients_per_ward": patients_per_ward,
         "avg_days": avg_days,
-        "count_wait_surg": count_wait_surg,
+        "count_wait_surg": int(query_df("SELECT COUNT(*) as c FROM patients WHERE active=1 AND surgery_needed=1")["c"][0]) if total_active>=0 else 0,
         "pending_patients": pending_patients,
         "scheduled_not_done": scheduled_not_done,
         "df_active": df_active,
@@ -394,6 +444,9 @@ def orders_status_chart(df_orders: pd.DataFrame):
     )
     st.altair_chart(chart, use_container_width=True)
 
+# ======================
+# Trang chủ
+# ======================
 if page == "Trang chủ":
     st.title("📊 Dashboard — Theo dõi bệnh nhân")
 
@@ -433,9 +486,8 @@ if page == "Trang chủ":
                     "diagnosis":"Chẩn đoán","notes":"Ghi chú","operated":"Đã phẫu thuật"
                 }), use_container_width=True, hide_index=True
             )
-            # --- Hàng action cho từng BN (đÃ LINK CHỈNH SỬA) ---
             for row in df_active.to_dict(orient="records"):
-                cols = st.columns([1,3,1,1,1,1,1])  # thêm 1 cột cho nút Chỉnh sửa
+                cols = st.columns([1,3,1,1,1,1,1])
                 cols[0].markdown(f"**{row['medical_id']}**")
                 diag_txt = f"<br/><span class='small'>Chẩn đoán: {row.get('diagnosis','')}</span>" if row.get("diagnosis") else ""
                 cols[1].markdown(f"**{row['name']}**  \n<span class='small'>{row.get('notes','')}</span>{diag_txt}", unsafe_allow_html=True)
@@ -446,6 +498,101 @@ if page == "Trang chủ":
                     go_edit(row["id"])
                 if cols[6].button("Xuất viện", key=f"dis_{row['id']}"):
                     discharge_patient(row["id"]); st.success(f"Đã xuất viện {row['name']}"); safe_rerun()
+
+# ======================
+# Trang TỔNG QUAN (mới)
+# ======================
+elif page == "Tổng quan":
+    st.title("📈 Tổng quan theo tuần")
+
+    # Chọn mốc tuần
+    today = date.today()
+    this_start, this_end = week_range(today, 0)     # tuần này
+    last_start, last_end = week_range(today, -1)    # tuần trước
+
+    st.caption(f"Tuần này: **{this_start.strftime('%d/%m')} – {this_end.strftime('%d/%m/%Y')}**  •  Tuần trước: **{last_start.strftime('%d/%m')} – {last_end.strftime('%d/%m/%Y')}**")
+
+    # --- Tính chỉ số tuần này ---
+    active_this_df = patients_active_between(this_start, this_end)
+    treatment_this = len(active_this_df)  # lượt điều trị = số BN hiện diện trong tuần
+    discharge_this = count_discharges_between(this_start, this_end)
+    orders_this    = count_orders_between(this_start, this_end)
+    avg_days_this  = avg_days_treated_in_week(this_start, this_end)
+
+    # --- Tính chỉ số tuần trước ---
+    active_last_df = patients_active_between(last_start, last_end)
+    treatment_last = len(active_last_df)
+    discharge_last = count_discharges_between(last_start, last_end)
+    orders_last    = count_orders_between(last_start, last_end)
+    avg_days_last  = avg_days_treated_in_week(last_start, last_end)
+
+    # ==== Biểu đồ 1: Ra viện vs Lượt điều trị (tuần này)
+    st.subheader("Ra viện vs Lượt điều trị (tuần này)")
+    df1 = pd.DataFrame({
+        "Chỉ số": ["Lượt điều trị", "Ra viện"],
+        "Giá trị": [treatment_this, discharge_this]
+    })
+    chart1 = (
+        alt.Chart(df1)
+        .mark_bar()
+        .encode(
+            x=alt.X("Chỉ số:N", sort=None),
+            y=alt.Y("Giá trị:Q"),
+            tooltip=["Chỉ số","Giá trị"]
+        )
+        .properties(height=280)
+    )
+    st.altair_chart(chart1, use_container_width=True)
+
+    # ==== Biểu đồ 2: Số chỉ định CLS trong tuần / Lượt điều trị
+    st.subheader("Chỉ định cận lâm sàng (tuần này) so với Lượt điều trị")
+    df2 = pd.DataFrame({
+        "Hạng mục": ["Chỉ định CLS", "Lượt điều trị"],
+        "Số lượng": [orders_this, treatment_this]
+    })
+    chart2 = (
+        alt.Chart(df2)
+        .mark_bar()
+        .encode(
+            x=alt.X("Hạng mục:N", sort=None),
+            y=alt.Y("Số lượng:Q"),
+            tooltip=["Hạng mục","Số lượng"]
+        )
+        .properties(height=280)
+    )
+    st.altair_chart(chart2, use_container_width=True)
+
+    # ==== Biểu đồ 3: So sánh tuần này vs tuần trước (3 chỉ số)
+    st.subheader("So sánh tuần này và tuần trước")
+    comp_df = pd.DataFrame([
+        {"Chỉ số":"Số ngày điều trị TB/BN", "Tuần":"Tuần trước", "Giá trị": avg_days_last},
+        {"Chỉ số":"Số ngày điều trị TB/BN", "Tuần":"Tuần này",   "Giá trị": avg_days_this},
+        {"Chỉ số":"Ra viện",                "Tuần":"Tuần trước", "Giá trị": discharge_last},
+        {"Chỉ số":"Ra viện",                "Tuần":"Tuần này",   "Giá trị": discharge_this},
+        {"Chỉ số":"Lượt điều trị",          "Tuần":"Tuần trước", "Giá trị": treatment_last},
+        {"Chỉ số":"Lượt điều trị",          "Tuần":"Tuần này",   "Giá trị": treatment_this},
+    ])
+    chart3 = (
+        alt.Chart(comp_df)
+        .mark_bar()
+        .encode(
+            x=alt.X("Chỉ số:N", sort=None),
+            y=alt.Y("Giá trị:Q"),
+            column=alt.Column("Tuần:N", sort=["Tuần trước","Tuần này"]),
+            tooltip=["Tuần","Chỉ số","Giá trị"]
+        )
+        .properties(height=280)
+        .resolve_scale(y='independent')  # mỗi cột có scale y riêng -> dễ nhìn
+    )
+    st.altair_chart(chart3, use_container_width=True)
+
+    # ==== Thẻ KPI tóm tắt
+    st.markdown("---")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: kpi("Lượt điều trị (tuần này)", treatment_this)
+    with c2: kpi("Ra viện (tuần này)", discharge_this)
+    with c3: kpi("CLS (tuần này)", orders_this)
+    with c4: kpi("Số ngày điều trị TB/BN", avg_days_this)
 
 # ======================
 # Nhập BN
@@ -529,7 +676,7 @@ elif page == "Nhập BN":
                     "ward": ward.strip(),
                     "bed": bed.strip(),
                     "admission_date": admission_date_ui.strftime(DATE_FMT),
-                    "severity": None,                      # không dùng nữa
+                    "severity": None,
                     "surgery_needed": surgery_needed,
                     "planned_treatment_days": int(planned_treatment_days),
                     "meds": meds.strip(),
@@ -774,7 +921,7 @@ elif page == "Lịch XN/Chụp":
         st.info("Không có BN đang điều trị để thêm chỉ định.")
 
 # ======================
-# Tìm kiếm & Lịch sử (đã bỏ mọi phần severity)
+# Tìm kiếm & Lịch sử
 # ======================
 elif page == "Tìm kiếm & Lịch sử":
     st.title("🔎 Tìm kiếm bệnh nhân")
@@ -816,7 +963,7 @@ elif page == "Tìm kiếm & Lịch sử":
                     safe_rerun()
 
 # ======================
-# Chỉnh sửa BN (trang riêng, đã link từ Trang chủ & các nơi khác)
+# Chỉnh sửa BN
 # ======================
 elif page == "Chỉnh sửa BN":
     st.title("✏️ Chỉnh sửa bệnh nhân")
@@ -829,7 +976,6 @@ elif page == "Chỉnh sửa BN":
     else:
         df_pat = query_df("SELECT id, medical_id, name, ward FROM patients ORDER BY active DESC, ward, name")
 
-    # Lọc nhanh theo tên/mã (tuỳ chọn)
     if not df_pat.empty and name_query:
         q = f"%{name_query.strip()}%"
         df_pat = query_df(
@@ -846,7 +992,6 @@ elif page == "Chỉnh sửa BN":
         st.stop()
 
     options = df_pat["id"].tolist()
-    # Nếu có sẵn edit_patient_id thì chọn đúng index đó
     if "edit_patient_id" in st.session_state and st.session_state.edit_patient_id in options:
         default_index = options.index(int(st.session_state.edit_patient_id))
     else:
@@ -939,18 +1084,14 @@ elif page == "Chỉnh sửa BN":
             )
         )
         st.success("✅ Đã lưu thay đổi.")
-        # Ở lại trang này để chỉnh tiếp
-        # safe_rerun()
 
     if do_discharge:
         discharge_patient(int(pid))
         st.success("✅ Đã xuất viện.")
-        # safe_rerun()
 
     if do_delete:
         _exec("DELETE FROM patients WHERE id=?", (int(pid),))
         st.success("🗑️ Đã xoá bệnh nhân.")
-        # safe_rerun()
 
 # ======================
 # Báo cáo
