@@ -285,7 +285,7 @@ def load_sample_data():
 PAGES = [
     "Trang chủ",
     "Tổng quan",
-    "Nhập BN",
+    "Nhập viện mới",
     "Đi buồng",
     "Lịch XN/Chụp",
     "Xuất viện",
@@ -1352,9 +1352,9 @@ elif page == "Chỉnh sửa BN":
         st.cache_data.clear()
 
 # ======================
-# Nhập BN
+# Nhập viện mới
 # ======================
-elif page == "Nhập BN":
+elif page == "Nhập viện mới":
     st.title("🧾 Nhập bệnh nhân mới")
     today_year = date.today().year
 
