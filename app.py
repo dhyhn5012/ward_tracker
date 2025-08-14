@@ -1530,4 +1530,4 @@ elif page == "Cài đặt / Demo":
                 with open(DB_PATH, "rb") as f:
                     data = f.read()
                 st.download_button("Tải file DB", data=data, file_name=DB_PATH, mime="application/x-sqlite3")
-# kết thúc
+# kết thúc 
