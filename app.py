@@ -289,7 +289,7 @@ PAGES = [
     "Đi buồng",
     "Lịch XN/Chụp",
     "Xuất viện",
-    "Lịch trực",          # <== TRANG MỚI
+    "Lịch trực",
     "Tìm kiếm & Lịch sử",
     "Chỉnh sửa BN",
     "Báo cáo",
@@ -680,21 +680,18 @@ elif page == "Đi buồng":
                     })
 
             st.success("✅ Đã lưu nội dung khám đi buồng")
-            st.cache_data.clear()   # Quan trọng: làm tươi ngay list/ bảng
+            st.cache_data.clear()
             safe_rerun()
 
         if discharge_now:
             discharge_patient(patient_id)
             st.success("🏁 Đã xuất viện.")
             st.cache_data.clear()
-            # Điều hướng sang tab Xuất viện
             st.session_state.active_page = "Xuất viện"
             st.session_state.discharge_view_date = date.today()
             safe_rerun()
 
-
-          # ==== TÌM KIẾM NHANH BN (không phân biệt dấu, Enter để tìm) ====
-    # 1) Hàm bỏ dấu để so khớp tên có/không dấu
+    # ==== TÌM KIẾM NHANH BN (không phân biệt dấu, Enter để tìm) ====
     def _strip_accents(s: str) -> str:
         if not isinstance(s, str):
             return ""
@@ -703,23 +700,24 @@ elif page == "Đi buồng":
 
     st.markdown("### 🔎 Tìm BN nhanh")
 
-    # 2) Dùng form để nhấn Enter là submit
+    # 1) Nhập & nhấn Enter để tìm
     with st.form("qsearch_form", clear_on_submit=False):
         q_text = st.text_input(
             "Nhập tên (có/không dấu) hoặc mã bệnh án rồi nhấn Enter",
             key="qsearch_text",
-            placeholder="VD: tuoc / tước / BN001"
+            placeholder="VD: hoang kim tuoc hoặc BN001"
         )
-        submitted = st.form_submit_button("Tìm")  # Nhấn Enter trong ô sẽ submit
+        submitted = st.form_submit_button("Tìm")  # Enter trong ô sẽ kích hoạt
 
+    # 2) Xử lý sau khi submit
     if submitted:
         q_norm = _strip_accents(q_text)
-        if not q_norm:
+        if not q_norm:  # cho phép 1 chữ, nhưng không để rỗng
             st.warning("Bạn chưa nhập nội dung tìm kiếm.")
         else:
-            # 3) Lấy danh sách BN đang điều trị, kèm CHẨN ĐOÁN
+            # Lấy danh sách BN đang điều trị (bỏ giường/đã mổ; thêm chẩn đoán)
             df_act = query_df("""
-                SELECT id, medical_id, name, ward, diagnosis, surgery_needed
+                SELECT id, medical_id, name, ward, diagnosis
                 FROM patients
                 WHERE active = 1
                 ORDER BY name
@@ -728,10 +726,10 @@ elif page == "Đi buồng":
             if df_act.empty:
                 st.info("Chưa có bệnh nhân đang điều trị.")
             else:
-                # 4) Map PHƯƠNG ÁN ĐIỀU TRỊ TIẾP mới nhất
-                plan_map = latest_plan_map_all_patients()  # đã được định nghĩa ở trên
+                # Map phương án điều trị tiếp mới nhất cho mọi BN
+                plan_map = latest_plan_map_all_patients()
 
-                # 5) Lọc không phân biệt dấu; chỉ cần trùng 1 chữ trong tên hoặc trong mã BA
+                # Lọc: trùng 1 phần tên (không dấu) hoặc 1 phần mã BA
                 results = []
                 for r in df_act.to_dict(orient="records"):
                     name_norm = _strip_accents(r.get("name", ""))
@@ -739,34 +737,49 @@ elif page == "Đi buồng":
                     if (q_norm in name_norm) or (q_norm in mid):
                         results.append(r)
 
-                # 6) Hiển thị kết quả: BỎ "Giường" & "Đã PT", THÊM "Chẩn đoán" & "PA điều trị tiếp"
+                # Hiển thị theo BẢNG có thể kéo ngang (phù hợp mobile)
                 if not results:
                     st.info("Không tìm thấy bệnh nhân phù hợp.")
                 else:
                     st.success(f"Tìm thấy {len(results)} bệnh nhân:")
+
+                    table_rows = []
+                    label_map = {}
                     for r in results:
-                        plan_last = plan_map.get(int(r["id"]), "") or "—"
-                        cols = st.columns([4,2,4,5,1,1])
-                        # Tên + Mã BA
-                        cols[0].markdown(
-                            f"**{r['name']}**  \n"
-                            f"<span class='small'>{r.get('medical_id') or '—'}</span>",
-                            unsafe_allow_html=True
+                        pid = int(r["id"])
+                        plan_last = plan_map.get(pid, "") or "—"
+                        row = {
+                            "Họ tên": r.get("name", "—"),
+                            "Mã BA": r.get("medical_id") or "—",
+                            "Phòng": r.get("ward") or "—",
+                            "Chẩn đoán": r.get("diagnosis") or "—",
+                            "PA điều trị tiếp": plan_last,
+                            "PID": pid,  # để mở Khám
+                        }
+                        table_rows.append(row)
+                        label_map[pid] = f"{row['Họ tên']} — {row['Mã BA']} (P.{row['Phòng']})"
+
+                    df_view = pd.DataFrame(table_rows)
+                    st.dataframe(
+                        df_view.drop(columns=["PID"]),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                    # Chọn một BN để mở dialog Khám
+                    pid_options = [r["PID"] for r in table_rows]
+                    if pid_options:
+                        selected_pid = st.selectbox(
+                            "Chọn bệnh nhân để mở Khám",
+                            options=pid_options,
+                            format_func=lambda x: label_map.get(int(x), str(x)),
+                            key="qsearch_pick_pid"
                         )
-                        # Phòng (giữ lại)
-                        cols[1].markdown(f"Phòng **{r.get('ward','') or '—'}**", unsafe_allow_html=True)
-                        # CHẨN ĐOÁN (mới)
-                        cols[2].markdown(f"**Chẩn đoán:** {r.get('diagnosis','') or '—'}", unsafe_allow_html=True)
-                        # PHƯƠNG ÁN ĐIỀU TRỊ TIẾP (mới)
-                        cols[3].markdown(f"**PA điều trị tiếp:** {plan_last}", unsafe_allow_html=True)
-                        # Cần mổ (giữ icon dao nếu bạn thích; có thể bỏ nếu không cần)
-                        cols[4].markdown("🔪" if r.get("surgery_needed")==1 else "")
-                        # Nút Khám mở dialog có sẵn
-                        if cols[5].button("Khám", key=f"quickround_{r['id']}"):
-                            open_round_dialog(int(r["id"]))
+                        if st.button("Khám", key="qsearch_open"):
+                            open_round_dialog(int(selected_pid))
+
     st.markdown("---")
     # ==== HẾT - TÌM KIẾM NHANH BN ====
-
 
     # ================== Nội dung trang ==================
     wards_df = query_df("SELECT DISTINCT ward FROM patients WHERE active=1 AND ward IS NOT NULL AND ward<>'' ORDER BY ward")
@@ -779,7 +792,7 @@ elif page == "Đi buồng":
         today_str = date.today().strftime(DATE_FMT)
         colL, colR = st.columns(2)
 
-        # ĐÃ KHÁM HÔM NAY (lấy lần khám mới nhất trong ngày, kèm PLAN)
+        # ĐÃ KHÁM HÔM NAY
         df_round_today_full = rounds_latest_today_with_plan()
         if not df_round_today_full.empty:
             df_round_today_full = df_round_today_full[df_round_today_full["ward"] == sel_ward]
@@ -883,7 +896,6 @@ elif page == "Đi buồng":
     # LỊCH SỬ KHÁM (xem lại)
     st.markdown("---")
     st.markdown("### 📅 Lịch sử khám")
-    # Cho phép chọn BN để xem lịch sử (thay vì phụ thuộc vào state)
     all_active = query_df("SELECT id, name FROM patients WHERE active=1 ORDER BY name")
     if all_active.empty:
         st.info("Chưa có BN đang điều trị để xem lịch sử.")
