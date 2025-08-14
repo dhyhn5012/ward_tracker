@@ -570,6 +570,67 @@ elif page == "Đi buồng":
     ward_options = wards_df["ward"].tolist() if not wards_df.empty else []
     sel_ward = st.selectbox("Chọn phòng", ward_options if ward_options else ["(Chưa có phòng)"])
 
+    # === 🗂️ Thư mục trong ngày: Đã khám hôm nay & Nhập mới hôm nay (theo phòng) ===
+    if ward_options:
+        st.markdown(f"### 🗂️ Thư mục trong ngày — Phòng **{sel_ward}**")
+        today_str = date.today().strftime(DATE_FMT)
+        colL, colR = st.columns(2)
+
+        # Đã khám đi buồng hôm nay
+        df_round_today = query_df("""
+            SELECT DISTINCT p.id, p.name, p.dob, p.diagnosis, p.notes, p.ward
+            FROM ward_rounds w
+            JOIN patients p ON w.patient_id = p.id
+            WHERE w.visit_date = ? AND p.active = 1
+            ORDER BY p.name
+        """, (today_str,))
+        if not df_round_today.empty:
+            df_round_today = df_round_today[df_round_today["ward"] == sel_ward]
+            if df_round_today.empty:
+                with colL:
+                    st.markdown("**Đã khám đi buồng hôm nay**")
+                    st.info("Chưa có.")
+            else:
+                df_v1 = df_round_today.copy()
+                df_v1["Tuổi"] = df_v1["dob"].apply(calc_age)
+                df_v1 = df_v1.rename(columns={"name":"Họ và tên","diagnosis":"Chẩn đoán","notes":"Ghi chú"})
+                df_v1 = df_v1[["Họ và tên","Tuổi","Chẩn đoán","Ghi chú"]]
+                with colL:
+                    st.markdown("**Đã khám đi buồng hôm nay**")
+                    st.dataframe(df_v1, use_container_width=True, hide_index=True)
+        else:
+            with colL:
+                st.markdown("**Đã khám đi buồng hôm nay**")
+                st.info("Chưa có.")
+
+        # BN nhập mới hôm nay
+        df_new_today = query_df("""
+            SELECT id, name, dob, diagnosis, notes, ward, active
+            FROM patients
+            WHERE admission_date = ? AND active = 1
+            ORDER BY name
+        """, (today_str,))
+        if not df_new_today.empty:
+            df_new_today = df_new_today[df_new_today["ward"] == sel_ward]
+            if df_new_today.empty:
+                with colR:
+                    st.markdown("**BN nhập mới hôm nay**")
+                    st.info("Chưa có.")
+            else:
+                df_v2 = df_new_today.copy()
+                df_v2["Tuổi"] = df_v2["dob"].apply(calc_age)
+                df_v2 = df_v2.rename(columns={"name":"Họ và tên","diagnosis":"Chẩn đoán","notes":"Ghi chú"})
+                df_v2 = df_v2[["Họ và tên","Tuổi","Chẩn đoán","Ghi chú"]]
+                with colR:
+                    st.markdown("**BN nhập mới hôm nay**")
+                    st.dataframe(df_v2, use_container_width=True, hide_index=True)
+        else:
+            with colR:
+                st.markdown("**BN nhập mới hôm nay**")
+                st.info("Chưa có.")
+
+        st.markdown("---")
+
     if ward_options:
         df_room = query_df("SELECT * FROM patients WHERE active=1 AND ward=? ORDER BY bed, name", (sel_ward,))
         if df_room.empty:
@@ -892,7 +953,7 @@ elif page == "Lịch trực":
         st.write(f"**{rec['filename']}**  \n<span class='small'>Tải lên: {rec['uploaded_at']}</span>", unsafe_allow_html=True)
         if os.path.exists(path):
             if mime.startswith("image/"):
-                st.image(path, use_column_width=True)
+                st.image(path, use_container_width=True)
             elif mime in ("application/pdf", "application/x-pdf"):
                 _embed_pdf_from_path(path)
             elif mime in ("text/csv", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"):
@@ -1305,4 +1366,4 @@ elif page == "Cài đặt / Demo":
                 with open(DB_PATH, "rb") as f:
                     data = f.read()
                 st.download_button("Tải file DB", data=data, file_name=DB_PATH, mime="application/x-sqlite3")
- # kết thúc
+# kết thúc
