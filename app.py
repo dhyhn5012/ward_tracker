@@ -9,6 +9,7 @@ import sqlite3
 from datetime import datetime, date, timedelta
 from io import BytesIO
 from typing import Dict, Any, Optional, List, Tuple
+import unicodedata
 
 import altair as alt
 import pandas as pd
@@ -690,6 +691,72 @@ elif page == "Đi buồng":
             st.session_state.active_page = "Xuất viện"
             st.session_state.discharge_view_date = date.today()
             safe_rerun()
+
+
+       # ==== TÌM KIẾM NHANH BN (không phân biệt dấu, Enter để tìm) ====
+    # Hàm bỏ dấu + chuẩn hóa để so khớp không phân biệt dấu
+    def _strip_accents(s: str) -> str:
+        if not isinstance(s, str):
+            return ""
+        s = s.lower().strip()
+        # NFD tách dấu, rồi bỏ các ký tự dấu (Mn)
+        return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+
+    st.markdown("### 🔎 Tìm BN nhanh")
+
+    # Dùng form để nhấn Enter là submit (không cần bấm nút)
+    with st.form("qsearch_form", clear_on_submit=False):
+        q_text = st.text_input(
+            "Nhập tên (có/không dấu) hoặc mã bệnh án rồi nhấn Enter",
+            key="qsearch_text",
+            placeholder="VD: hoang kim tuoc hoặc BN001"
+        )
+        submitted = st.form_submit_button("Tìm")  # Enter trong ô sẽ kích hoạt nút này
+
+    if submitted:
+        q_norm = _strip_accents(q_text)
+        if not q_norm:  # cho phép 1 chữ, nhưng nếu rỗng thì cảnh báo
+            st.warning("Bạn chưa nhập nội dung tìm kiếm.")
+        else:
+            # Lấy danh sách BN đang điều trị
+            df_act = query_df("""
+                SELECT id, medical_id, name, ward, bed, surgery_needed, operated
+                FROM patients
+                WHERE active = 1
+                ORDER BY name
+            """)
+
+            if df_act.empty:
+                st.info("Chưa có bệnh nhân đang điều trị.")
+            else:
+                results = []
+                for r in df_act.to_dict(orient="records"):
+                    name_norm = _strip_accents(r.get("name", ""))
+                    mid = (r.get("medical_id") or "").lower()
+                    # Chỉ cần q_norm xuất hiện 1 phần trong tên (không dấu) hoặc trong mã BA
+                    if (q_norm in name_norm) or (q_norm in mid):
+                        results.append(r)
+
+                if not results:
+                    st.info("Không tìm thấy bệnh nhân phù hợp.")
+                else:
+                    st.success(f"Tìm thấy {len(results)} bệnh nhân:")
+                    for r in results:
+                        cols = st.columns([4,2,2,1,1,1])
+                        cols[0].markdown(
+                            f"**{r['name']}**  \n"
+                            f"<span class='small'>{r.get('medical_id') or '—'}</span>",
+                            unsafe_allow_html=True
+                        )
+                        cols[1].markdown(f"Phòng **{r.get('ward','') or '—'}**", unsafe_allow_html=True)
+                        cols[2].markdown(f"Giường **{r.get('bed','') or '—'}**", unsafe_allow_html=True)
+                        cols[3].markdown("🔪" if r.get("surgery_needed")==1 else "")
+                        cols[4].markdown("✅" if r.get("operated")==1 else "✗")
+                        if cols[5].button("Khám", key=f"quickround_{r['id']}"):
+                            open_round_dialog(int(r["id"]))
+    st.markdown("---")
+    # ==== HẾT - TÌM KIẾM NHANH BN ====
+
 
     # ================== Nội dung trang ==================
     wards_df = query_df("SELECT DISTINCT ward FROM patients WHERE active=1 AND ward IS NOT NULL AND ward<>'' ORDER BY ward")
