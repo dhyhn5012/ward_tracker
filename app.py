@@ -693,34 +693,33 @@ elif page == "Đi buồng":
             safe_rerun()
 
 
-       # ==== TÌM KIẾM NHANH BN (không phân biệt dấu, Enter để tìm) ====
-    # Hàm bỏ dấu + chuẩn hóa để so khớp không phân biệt dấu
+          # ==== TÌM KIẾM NHANH BN (không phân biệt dấu, Enter để tìm) ====
+    # 1) Hàm bỏ dấu để so khớp tên có/không dấu
     def _strip_accents(s: str) -> str:
         if not isinstance(s, str):
             return ""
         s = s.lower().strip()
-        # NFD tách dấu, rồi bỏ các ký tự dấu (Mn)
         return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
 
     st.markdown("### 🔎 Tìm BN nhanh")
 
-    # Dùng form để nhấn Enter là submit (không cần bấm nút)
+    # 2) Dùng form để nhấn Enter là submit
     with st.form("qsearch_form", clear_on_submit=False):
         q_text = st.text_input(
             "Nhập tên (có/không dấu) hoặc mã bệnh án rồi nhấn Enter",
             key="qsearch_text",
-            placeholder="VD: hoang kim tuoc hoặc BN001"
+            placeholder="VD: tuoc / tước / BN001"
         )
-        submitted = st.form_submit_button("Tìm")  # Enter trong ô sẽ kích hoạt nút này
+        submitted = st.form_submit_button("Tìm")  # Nhấn Enter trong ô sẽ submit
 
     if submitted:
         q_norm = _strip_accents(q_text)
-        if not q_norm:  # cho phép 1 chữ, nhưng nếu rỗng thì cảnh báo
+        if not q_norm:
             st.warning("Bạn chưa nhập nội dung tìm kiếm.")
         else:
-            # Lấy danh sách BN đang điều trị
+            # 3) Lấy danh sách BN đang điều trị, kèm CHẨN ĐOÁN
             df_act = query_df("""
-                SELECT id, medical_id, name, ward, bed, surgery_needed, operated
+                SELECT id, medical_id, name, ward, diagnosis, surgery_needed
                 FROM patients
                 WHERE active = 1
                 ORDER BY name
@@ -729,29 +728,40 @@ elif page == "Đi buồng":
             if df_act.empty:
                 st.info("Chưa có bệnh nhân đang điều trị.")
             else:
+                # 4) Map PHƯƠNG ÁN ĐIỀU TRỊ TIẾP mới nhất
+                plan_map = latest_plan_map_all_patients()  # đã được định nghĩa ở trên
+
+                # 5) Lọc không phân biệt dấu; chỉ cần trùng 1 chữ trong tên hoặc trong mã BA
                 results = []
                 for r in df_act.to_dict(orient="records"):
                     name_norm = _strip_accents(r.get("name", ""))
                     mid = (r.get("medical_id") or "").lower()
-                    # Chỉ cần q_norm xuất hiện 1 phần trong tên (không dấu) hoặc trong mã BA
                     if (q_norm in name_norm) or (q_norm in mid):
                         results.append(r)
 
+                # 6) Hiển thị kết quả: BỎ "Giường" & "Đã PT", THÊM "Chẩn đoán" & "PA điều trị tiếp"
                 if not results:
                     st.info("Không tìm thấy bệnh nhân phù hợp.")
                 else:
                     st.success(f"Tìm thấy {len(results)} bệnh nhân:")
                     for r in results:
-                        cols = st.columns([4,2,2,1,1,1])
+                        plan_last = plan_map.get(int(r["id"]), "") or "—"
+                        cols = st.columns([4,2,4,5,1,1])
+                        # Tên + Mã BA
                         cols[0].markdown(
                             f"**{r['name']}**  \n"
                             f"<span class='small'>{r.get('medical_id') or '—'}</span>",
                             unsafe_allow_html=True
                         )
+                        # Phòng (giữ lại)
                         cols[1].markdown(f"Phòng **{r.get('ward','') or '—'}**", unsafe_allow_html=True)
-                        cols[2].markdown(f"Giường **{r.get('bed','') or '—'}**", unsafe_allow_html=True)
-                        cols[3].markdown("🔪" if r.get("surgery_needed")==1 else "")
-                        cols[4].markdown("✅" if r.get("operated")==1 else "✗")
+                        # CHẨN ĐOÁN (mới)
+                        cols[2].markdown(f"**Chẩn đoán:** {r.get('diagnosis','') or '—'}", unsafe_allow_html=True)
+                        # PHƯƠNG ÁN ĐIỀU TRỊ TIẾP (mới)
+                        cols[3].markdown(f"**PA điều trị tiếp:** {plan_last}", unsafe_allow_html=True)
+                        # Cần mổ (giữ icon dao nếu bạn thích; có thể bỏ nếu không cần)
+                        cols[4].markdown("🔪" if r.get("surgery_needed")==1 else "")
+                        # Nút Khám mở dialog có sẵn
                         if cols[5].button("Khám", key=f"quickround_{r['id']}"):
                             open_round_dialog(int(r["id"]))
     st.markdown("---")
