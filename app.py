@@ -597,58 +597,65 @@ if page == "Trang chủ":
 # Trang TỔNG QUAN
 # ======================
 elif page == "Tổng quan":
-    st.title("📈 Tổng quan theo tuần")
+    try:
+        st.title("📈 Tổng quan theo tuần")
 
-    today = date.today()
-    this_start, this_end = week_range(today, 0)
-    last_start, last_end = week_range(today, -1)
-    st.caption(f"Tuần này: **{this_start.strftime('%d/%m')} – {this_end.strftime('%d/%m/%Y')}**  •  Tuần trước: **{last_start.strftime('%d/%m')} – {last_end.strftime('%d/%m/%Y')}**")
+        today = date.today()
+        this_start, this_end = week_range(today, 0)
+        last_start, last_end = week_range(today, -1)
+        st.caption(f"Tuần này: **{this_start.strftime('%d/%m')} – {this_end.strftime('%d/%m/%Y')}**  •  Tuần trước: **{last_start.strftime('%d/%m')} – {last_end.strftime('%d/%m/%Y')}**")
 
-    active_this_df = patients_active_between(this_start, this_end)
-    treatment_this = len(active_this_df)
-    discharge_this = count_discharges_between(this_start, this_end)
-    orders_this    = count_orders_between(this_start, this_end)
-    avg_days_this  = avg_days_treated_in_week(this_start, this_end)
+        active_this_df = patients_active_between(this_start, this_end)
+        treatment_this = len(active_this_df)
+        discharge_this = count_discharges_between(this_start, this_end)
+        orders_this    = count_orders_between(this_start, this_end)
+        avg_days_this  = avg_days_treated_in_week(this_start, this_end)
 
-    active_last_df = patients_active_between(last_start, last_end)
-    treatment_last = len(active_last_df)
-    discharge_last = count_discharges_between(last_start, last_end)
-    orders_last    = count_orders_between(last_start, last_end)
-    avg_days_last  = avg_days_treated_in_week(last_start, last_end)
+        active_last_df = patients_active_between(last_start, last_end)
+        treatment_last = len(active_last_df)
+        discharge_last = count_discharges_between(last_start, last_end)
+        orders_last    = count_orders_between(last_start, last_end)
+        avg_days_last  = avg_days_treated_in_week(last_start, last_end)
 
-    st.subheader("Ra viện vs Lượt điều trị (tuần này)")
-    df1 = pd.DataFrame({"Chỉ số": ["Lượt điều trị", "Ra viện"], "Giá trị": [treatment_this, discharge_this]})
-    st.altair_chart(alt.Chart(df1).mark_bar().encode(x="Chỉ số:N", y="Giá trị:Q", tooltip=["Chỉ số","Giá trị"]).properties(height=280), use_container_width=True)
+        st.subheader("Ra viện vs Lượt điều trị (tuần này)")
+        df1 = pd.DataFrame({"Chỉ số": ["Lượt điều trị", "Ra viện"], "Giá trị": [treatment_this, discharge_this]})
+        st.altair_chart(alt.Chart(df1).mark_bar().encode(x="Chỉ số:N", y="Giá trị:Q", tooltip=["Chỉ số","Giá trị"]).properties(height=280), use_container_width=True)
 
-    st.subheader("Chỉ định cận lâm sàng (tuần này) so với Lượt điều trị")
-    df2 = pd.DataFrame({"Hạng mục": ["Chỉ định CLS", "Lượt điều trị"], "Số lượng": [orders_this, treatment_this]})
-    st.altair_chart(alt.Chart(df2).mark_bar().encode(x="Hạng mục:N", y="Số lượng:Q", tooltip=["Hạng mục","Số lượng"]).properties(height=280), use_container_width=True)
+        st.subheader("Chỉ định cận lâm sàng (tuần này) so với Lượt điều trị")
+        df2 = pd.DataFrame({"Hạng mục": ["Chỉ định CLS", "Lượt điều trị"], "Số lượng": [orders_this, treatment_this]})
+        st.altair_chart(alt.Chart(df2).mark_bar().encode(x="Hạng mục:N", y="Số lượng:Q", tooltip=["Hạng mục","Số lượng"]).properties(height=280), use_container_width=True)
 
-    st.subheader("So sánh tuần này và tuần trước")
-    comp_df = pd.DataFrame([
-        {"Chỉ số":"Số ngày điều trị TB/BN", "Tuần":"Tuần trước", "Giá trị": avg_days_last},
-        {"Chỉ số":"Số ngày điều trị TB/BN", "Tuần":"Tuần này",   "Giá trị": avg_days_this},
-        {"Chỉ số":"Ra viện",                "Tuần":"Tuần trước", "Giá trị": discharge_last},
-        {"Chỉ số":"Ra viện",                "Tuần":"Tuần này",   "Giá trị": discharge_this},
-        {"Chỉ số":"Lượt điều trị",          "Tuần":"Tuần trước", "Giá trị": treatment_last},
-        {"Chỉ số":"Lượt điều trị",          "Tuần":"Tuần này",   "Giá trị": treatment_this},
-    ])
-    chart3 = (
-        alt.Chart(comp_df)
-        .mark_bar()
-        .encode(x=alt.X("Chỉ số:N", sort=None), y="Giá trị:Q", column=alt.Column("Tuần:N", sort=["Tuần trước","Tuần này"]),
-                tooltip=["Tuần","Chỉ số","Giá trị"])
-        .properties(height=280)
-        .resolve_scale(y='independent')
-    )
-    st.altair_chart(chart3, use_container_width=True)
+        st.subheader("So sánh tuần này và tuần trước")
+        comp_df = pd.DataFrame([
+            {"Chỉ số":"Số ngày điều trị TB/BN", "Tuần":"Tuần trước", "Giá trị": avg_days_last},
+            {"Chỉ số":"Số ngày điều trị TB/BN", "Tuần":"Tuần này",   "Giá trị": avg_days_this},
+            {"Chỉ số":"Ra viện",                "Tuần":"Tuần trước", "Giá trị": discharge_last},
+            {"Chỉ số":"Ra viện",                "Tuần":"Tuần này",   "Giá trị": discharge_this},
+            {"Chỉ số":"Lượt điều trị",          "Tuần":"Tuần trước", "Giá trị": treatment_last},
+            {"Chỉ số":"Lượt điều trị",          "Tuần":"Tuần này",   "Giá trị": treatment_this},
+        ])
+        chart3 = (
+            alt.Chart(comp_df)
+            .mark_bar()
+            .encode(x=alt.X("Chỉ số:N", sort=None), y="Giá trị:Q", column=alt.Column("Tuần:N", sort=["Tuần trước","Tuần này"]),
+                    tooltip=["Tuần","Chỉ số","Giá trị"])
+            .properties(height=280)
+            .resolve_scale(y='independent')
+        )
+        st.altair_chart(chart3, use_container_width=True)
 
-    st.markdown("---")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: kpi("Lượt điều trị (tuần này)", treatment_this)
-    with c2: kpi("Ra viện (tuần này)", discharge_this)
-    with c3: kpi("CLS (tuần này)", orders_this)
-    with c4: kpi("Số ngày điều trị TB/BN", avg_days_this)
+        st.markdown("---")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1: kpi("Lượt điều trị (tuần này)", treatment_this)
+        with c2: kpi("Ra viện (tuần này)", discharge_this)
+        with c3: kpi("CLS (tuần này)", orders_this)
+        with c4: kpi("Số ngày điều trị TB/BN", avg_days_this)
+    except Exception as e:
+        import traceback
+        st.error("Có lỗi khi hiển thị Trang Tổng quan. Vui lòng xem chi tiết bên dưới.")
+        st.code(traceback.format_exc())
+        # stop further rendering of this page
+        st.stop()
 
 # ======================
 # Đi buồng (đã chuyển sang dùng Modal/Dialog)
