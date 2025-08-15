@@ -29,20 +29,21 @@ st.set_page_config(page_title="Bác sĩ Trực tuyến - Theo dõi bệnh nhân"
 # ======================
 CUSTOM_CSS = """
 <style>
-.kpi {padding:16px;border-radius:16px;background:var(--background-color);box-shadow:0 2px 10px rgba(0,0,0,0.05);border:1px solid rgba(0,0,0,0.05)}
-.kpi h3{margin:0;font-size:0.9rem;color:var(--text-color-secondary)}
-.kpi .v{font-weight:700;font-size:1.6rem;margin-top:6px}
-:root{--text-color-secondary:#6b7280;--background-color: rgba(255,255,255,0.6)}
-[data-theme="dark"] :root{--text-color-secondary:#9ca3af;--background-color:rgba(255,255,255,0.04)}
-.block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
-hr {margin: 0.6rem 0 1rem 0;}
-.small {font-size: 0.9rem; color: var(--text-color-secondary);}
-.badge {display:inline-block;padding:2px 8px;border-radius:999px;font-size:0.75rem;border:1px solid rgba(0,0,0,0.1)}
-.badge.ok {background:#e8f5e9}
-.badge.warn {background:#fff8e1}
-.badge.danger {background:#ffebee}
-.embed {width:100%; height:720px; border:1px solid rgba(0,0,0,0.08); border-radius:12px; overflow:hidden}
-.st-emotion-cache-1dp5vir {z-index: 1000;} /* đảm bảo dialog nổi trên cùng */
+:root{--accent:#0d9488;--muted:#6b7280;--card:#ffffff;--bg:#f8fafc}
+body{background:var(--bg)}
+.kpi{display:flex;align-items:center;gap:12px;padding:14px;border-radius:12px;background:linear-gradient(180deg, rgba(255,255,255,0.9), rgba(250,250,250,0.9));box-shadow:0 6px 20px rgba(13, 20, 25, 0.06);border:1px solid rgba(0,0,0,0.04)}
+.kpi .icon{width:44px;height:44px;border-radius:10px;background:var(--accent);display:flex;align-items:center;justify-content:center;color:white;font-weight:700}
+.kpi h3{margin:0;font-size:0.85rem;color:var(--muted)}
+.kpi .v{font-weight:700;font-size:1.45rem;margin-top:2px}
+.header-card{padding:16px;border-radius:12px;background:linear-gradient(90deg,#f1f5f9,#ffffff);box-shadow:0 6px 18px rgba(13,20,25,0.04);margin-bottom:12px}
+.quick-actions{display:flex;gap:10px;flex-wrap:wrap}
+.quick-btn{background:var(--card);border-radius:10px;padding:10px 12px;border:1px solid rgba(0,0,0,0.06);cursor:pointer}
+.small{font-size:0.9rem;color:var(--muted)}
+.badge{display:inline-block;padding:4px 10px;border-radius:999px;font-size:0.75rem;border:1px solid rgba(0,0,0,0.08)}
+.badge.ok{background:#e8f5e9}
+.badge.warn{background:#fff8e1}
+.badge.danger{background:#ffebee}
+.embed{width:100%;height:720px;border:1px solid rgba(0,0,0,0.08);border-radius:12px;overflow:hidden}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -463,11 +464,15 @@ def dashboard_stats(filters: Dict[str, Any]) -> Dict[str, Any]:
         "df_orders": df_orders,
     }
 
-def kpi(title: str, value: Any):
+def kpi(title: str, value: Any, icon: Optional[str] = None):
+    icon_html = f"<div class='icon'>{icon}</div>" if icon else ""
     st.markdown(f"""
-        <div class="kpi">
-            <h3>{title}</h3>
-            <div class="v">{value}</div>
+        <div class='kpi'>
+            {icon_html}
+            <div>
+                <h3>{title}</h3>
+                <div class='v'>{value}</div>
+            </div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -510,16 +515,34 @@ if page == "Trang chủ":
         try:
             st.image(banner_file, use_container_width=True)
         except Exception:
-            # Fallback: nhúng bằng markdown nếu có vấn đề với st.image
             st.markdown(f"![banner]({banner_file})")
     else:
         st.markdown(
-            "<div style='padding:8px;border-radius:8px;background:#f1f5f9;text-align:center;margin-bottom:12px;'>"
-            "<h2 style='margin:6px 0'>Phần mềm theo dõi bệnh nhân</h2>"
-            "<p class='small' style='margin:0'>Không có banner. Bạn có thể tải lên ảnh banner trong mục Cài đặt / Demo.</p>"
+            "<div class='header-card'>"
+            "<h2 style='margin:0'>Phần mềm theo dõi bệnh nhân</h2>"
+            "<p class='small' style='margin:6px 0 0 0'>Không có banner. Vào Cài đặt / Demo để tải ảnh hiển thị ở đầu trang.</p>"
             "</div>",
             unsafe_allow_html=True
         )
+
+    # Quick action toolbar
+    st.markdown("<div class='header-card'>", unsafe_allow_html=True)
+    col_a, col_b, col_c, col_d, col_e = st.columns([2,2,2,2,6])
+    with col_a:
+        if st.button("➕ Thêm BN"):
+            st.session_state.active_page = "Nhập viện mới"; safe_rerun()
+    with col_b:
+        if st.button("🚶 Đi buồng"):
+            st.session_state.active_page = "Đi buồng"; safe_rerun()
+    with col_c:
+        if st.button("🧪 Lịch XN"):
+            st.session_state.active_page = "Lịch XN/Chụp"; safe_rerun()
+    with col_d:
+        if st.button("📑 Báo cáo"):
+            st.session_state.active_page = "Báo cáo"; safe_rerun()
+    with col_e:
+        st.markdown("<div class='small'>Ngắn gọn: Tạo BN mới, mở form đi buồng, quản lý chỉ định, xem báo cáo nhanh.</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     df_all_wards = query_df("SELECT DISTINCT ward FROM patients WHERE ward IS NOT NULL AND ward<>'' ORDER BY ward")
     ward_list = ["Tất cả"] + (df_all_wards["ward"].tolist() if not df_all_wards.empty else [])
@@ -530,11 +553,11 @@ if page == "Trang chủ":
     stats = dashboard_stats({"ward": ward_filter})
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    with c1: kpi("BN đang điều trị", stats["total_active"])
-    with c2: kpi("Thời gian điều trị TB (ngày)", stats["avg_days"])
-    with c3: kpi("Chờ mổ", stats["count_wait_surg"])
-    with c4: kpi("BN có order chưa xong", stats["pending_patients"])
-    with c5: kpi("Order quá hạn / đến hạn", stats["scheduled_not_done"])
+    with c1: kpi("BN đang điều trị", stats["total_active"], icon="🫀")
+    with c2: kpi("Thời gian điều trị TB (ngày)", stats["avg_days"], icon="⏱️")
+    with c3: kpi("Chờ mổ", stats["count_wait_surg"], icon="🔪")
+    with c4: kpi("BN có order chưa xong", stats["pending_patients"], icon="📋")
+    with c5: kpi("Order quá hạn / đến hạn", stats["scheduled_not_done"], icon="⚠️")
     st.markdown("---")
 
     st.subheader("BN theo phòng")
