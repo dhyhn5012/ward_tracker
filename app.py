@@ -431,6 +431,7 @@ def dashboard_stats(filters: Dict[str, Any]) -> Dict[str, Any]:
     if filters.get("ward") and filters["ward"] != "Tất cả":
         base_active += " AND ward=?"; params.append(filters["ward"])
     df_active = query_df(base_active, tuple(params))
+    plan_map = latest_plan_map_all_patients()
     total_active = len(df_active)
     patients_per_ward = (
         df_active.groupby("ward").size().reset_index(name="Số BN").sort_values("Số BN", ascending=False)
@@ -439,6 +440,7 @@ def dashboard_stats(filters: Dict[str, Any]) -> Dict[str, Any]:
     if total_active > 0:
         df_active = df_active.copy()
         df_active["days_in_hospital"] = df_active["admission_date"].apply(lambda d: days_between(d))
+        df_active["plan_next"] = df_active["id"].map(plan_map).fillna("")
         avg_days = round(df_active["days_in_hospital"].mean(), 1)
     else:
         avg_days = 0
@@ -461,6 +463,7 @@ def dashboard_stats(filters: Dict[str, Any]) -> Dict[str, Any]:
         "scheduled_not_done": scheduled_not_done,
         "df_active": df_active,
         "df_orders": df_orders,
+        "plan_map": plan_map,
     }
 
 def kpi(title: str, value: Any):
@@ -530,14 +533,37 @@ if page == "Trang chủ":
         if df_active.empty:
             st.info("Không có bệnh nhân đang nằm.")
         else:
-            base_cols = ["id","medical_id","name","ward","bed","surgery_needed","admission_date","diagnosis","notes","operated"]
+            base_cols = [
+                "id",
+                "medical_id",
+                "name",
+                "ward",
+                "bed",
+                "surgery_needed",
+                "admission_date",
+                "diagnosis",
+                "plan_next",
+                "notes",
+                "operated",
+            ]
             view_cols = [c for c in base_cols if c in df_active.columns]
             st.dataframe(
-                df_active[view_cols].rename(columns={
-                    "medical_id":"Mã BA","name":"Họ tên","ward":"Phòng","bed":"Giường",
-                    "surgery_needed":"Cần mổ","admission_date":"Ngày NV",
-                    "diagnosis":"Chẩn đoán","notes":"Ghi chú","operated":"Đã phẫu thuật"
-                }), use_container_width=True, hide_index=True
+                df_active[view_cols].rename(
+                    columns={
+                        "medical_id": "Mã BA",
+                        "name": "Họ tên",
+                        "ward": "Phòng",
+                        "bed": "Giường",
+                        "surgery_needed": "Cần mổ",
+                        "admission_date": "Ngày NV",
+                        "diagnosis": "Chẩn đoán",
+                        "plan_next": "PA điều trị tiếp",
+                        "notes": "Ghi chú",
+                        "operated": "Đã phẫu thuật",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
             )
             for row in df_active.to_dict(orient="records"):
                 cols = st.columns([1,3,1,1,1,1,1])
