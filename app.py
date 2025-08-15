@@ -508,7 +508,7 @@ if page == "Trang chủ":
     banner_file = next((p for p in banner_paths if os.path.exists(p)), None)
     if banner_file:
         try:
-            st.image(banner_file, use_column_width=True)
+            st.image(banner_file, use_container_width=True)
         except Exception:
             # Fallback: nhúng bằng markdown nếu có vấn đề với st.image
             st.markdown(f"![banner]({banner_file})")
@@ -1549,7 +1549,7 @@ elif page == "Cài đặt / Demo":
     if current_banner:
         st.write("Banner hiện tại:")
         try:
-            st.image(current_banner, use_column_width=True)
+            st.image(current_banner, use_container_width=True)
         except Exception:
             st.markdown(f"![banner]({current_banner})")
 
