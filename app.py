@@ -220,6 +220,36 @@ def query_df(sql: str, params: tuple = ()) -> pd.DataFrame:
     with get_conn() as conn:
         return pd.read_sql_query(sql, conn, params=params)
 
+def normalize_text(s: str) -> str:
+    """Loại bỏ dấu và chuyển thường dùng cho tìm kiếm."""
+    if not isinstance(s, str):
+        return ""
+    s = s.lower().strip()
+    return "".join(
+        c for c in unicodedata.normalize("NFD", s)
+        if unicodedata.category(c) != "Mn"
+    )
+
+def search_active_patients(query: str) -> pd.DataFrame:
+    """Tìm BN đang điều trị theo tên hoặc mã bệnh án."""
+    q_norm = normalize_text(query)
+    if not q_norm:
+        return pd.DataFrame(columns=["id", "medical_id", "name", "ward", "diagnosis"])
+    like = f"%{q_norm}%"
+    with get_conn() as conn:
+        conn.create_function("normalize", 1, normalize_text)
+        sql = """
+            SELECT id, medical_id, name, ward, diagnosis
+            FROM patients
+            WHERE active = 1
+              AND (
+                normalize(COALESCE(name, '')) LIKE ?
+                OR normalize(COALESCE(medical_id, '')) LIKE ?
+              )
+            ORDER BY name
+        """
+        return pd.read_sql_query(sql, conn, params=(like, like))
+
 # ======================
 # Utilities
 # ======================
@@ -692,12 +722,6 @@ elif page == "Đi buồng":
             safe_rerun()
 
     # ==== TÌM KIẾM NHANH BN (không phân biệt dấu, Enter để tìm) ====
-    def _strip_accents(s: str) -> str:
-        if not isinstance(s, str):
-            return ""
-        s = s.lower().strip()
-        return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
-
     st.markdown("### 🔎 Tìm BN nhanh")
 
     # 1) Nhập & nhấn Enter để tìm
@@ -705,78 +729,60 @@ elif page == "Đi buồng":
         q_text = st.text_input(
             "Nhập tên (có/không dấu) hoặc mã bệnh án rồi nhấn Enter",
             key="qsearch_text",
-            placeholder="VD: hoang kim tuoc hoặc BN001"
+            placeholder="VD: hoang kim tuoc hoặc BN001",
         )
         submitted = st.form_submit_button("Tìm")  # Enter trong ô sẽ kích hoạt
 
     # 2) Xử lý sau khi submit
     if submitted:
-        q_norm = _strip_accents(q_text)
+        q_norm = normalize_text(q_text)
         if not q_norm:  # cho phép 1 chữ, nhưng không để rỗng
             st.warning("Bạn chưa nhập nội dung tìm kiếm.")
         else:
-            # Lấy danh sách BN đang điều trị (bỏ giường/đã mổ; thêm chẩn đoán)
-            df_act = query_df("""
-                SELECT id, medical_id, name, ward, diagnosis
-                FROM patients
-                WHERE active = 1
-                ORDER BY name
-            """)
+            df_act = search_active_patients(q_text)
 
             if df_act.empty:
-                st.info("Chưa có bệnh nhân đang điều trị.")
+                st.info("Không tìm thấy bệnh nhân phù hợp.")
             else:
                 # Map phương án điều trị tiếp mới nhất cho mọi BN
                 plan_map = latest_plan_map_all_patients()
 
-                # Lọc: trùng 1 phần tên (không dấu) hoặc 1 phần mã BA
-                results = []
+                st.success(f"Tìm thấy {len(df_act)} bệnh nhân:")
+
+                table_rows = []
+                label_map = {}
                 for r in df_act.to_dict(orient="records"):
-                    name_norm = _strip_accents(r.get("name", ""))
-                    mid = (r.get("medical_id") or "").lower()
-                    if (q_norm in name_norm) or (q_norm in mid):
-                        results.append(r)
+                    pid = int(r["id"])
+                    plan_last = plan_map.get(pid, "") or "—"
+                    row = {
+                        "Họ tên": r.get("name", "—"),
+                        "Mã BA": r.get("medical_id") or "—",
+                        "Phòng": r.get("ward") or "—",
+                        "Chẩn đoán": r.get("diagnosis") or "—",
+                        "PA điều trị tiếp": plan_last,
+                        "PID": pid,  # để mở Khám
+                    }
+                    table_rows.append(row)
+                    label_map[pid] = f"{row['Họ tên']} — {row['Mã BA']} (P.{row['Phòng']})"
 
-                # Hiển thị theo BẢNG có thể kéo ngang (phù hợp mobile)
-                if not results:
-                    st.info("Không tìm thấy bệnh nhân phù hợp.")
-                else:
-                    st.success(f"Tìm thấy {len(results)} bệnh nhân:")
+                df_view = pd.DataFrame(table_rows)
+                st.dataframe(
+                    df_view.drop(columns=["PID"]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
-                    table_rows = []
-                    label_map = {}
-                    for r in results:
-                        pid = int(r["id"])
-                        plan_last = plan_map.get(pid, "") or "—"
-                        row = {
-                            "Họ tên": r.get("name", "—"),
-                            "Mã BA": r.get("medical_id") or "—",
-                            "Phòng": r.get("ward") or "—",
-                            "Chẩn đoán": r.get("diagnosis") or "—",
-                            "PA điều trị tiếp": plan_last,
-                            "PID": pid,  # để mở Khám
-                        }
-                        table_rows.append(row)
-                        label_map[pid] = f"{row['Họ tên']} — {row['Mã BA']} (P.{row['Phòng']})"
-
-                    df_view = pd.DataFrame(table_rows)
-                    st.dataframe(
-                        df_view.drop(columns=["PID"]),
-                        use_container_width=True,
-                        hide_index=True
+                # Chọn một BN để mở dialog Khám
+                pid_options = [r["PID"] for r in table_rows]
+                if pid_options:
+                    selected_pid = st.selectbox(
+                        "Chọn bệnh nhân để mở Khám",
+                        options=pid_options,
+                        format_func=lambda x: label_map.get(int(x), str(x)),
+                        key="qsearch_pick_pid",
                     )
-
-                    # Chọn một BN để mở dialog Khám
-                    pid_options = [r["PID"] for r in table_rows]
-                    if pid_options:
-                        selected_pid = st.selectbox(
-                            "Chọn bệnh nhân để mở Khám",
-                            options=pid_options,
-                            format_func=lambda x: label_map.get(int(x), str(x)),
-                            key="qsearch_pick_pid"
-                        )
-                        if st.button("Khám", key="qsearch_open"):
-                            open_round_dialog(int(selected_pid))
+                    if st.button("Khám", key="qsearch_open"):
+                        open_round_dialog(int(selected_pid))
 
     st.markdown("---")
     # ==== HẾT - TÌM KIẾM NHANH BN ====
