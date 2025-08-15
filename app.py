@@ -501,7 +501,25 @@ def orders_status_pie_chart(df_orders: pd.DataFrame):
 # Trang chủ
 # ======================
 if page == "Trang chủ":
-    st.title("📊 Theo dõi bệnh nhân")
+    st.title("📊 Dashboard — Theo dõi bệnh nhân")
+
+    # Hiển thị banner (nếu đã tải lên trong thư mục static/)
+    banner_paths = ["static/banner.png", "static/banner.jpg", "static/banner.jpeg", "static/banner.gif"]
+    banner_file = next((p for p in banner_paths if os.path.exists(p)), None)
+    if banner_file:
+        try:
+            st.image(banner_file, use_column_width=True)
+        except Exception:
+            # Fallback: nhúng bằng markdown nếu có vấn đề với st.image
+            st.markdown(f"![banner]({banner_file})")
+    else:
+        st.markdown(
+            "<div style='padding:8px;border-radius:8px;background:#f1f5f9;text-align:center;margin-bottom:12px;'>"
+            "<h2 style='margin:6px 0'>Phần mềm theo dõi bệnh nhân</h2>"
+            "<p class='small' style='margin:0'>Không có banner. Bạn có thể tải lên ảnh banner trong mục Cài đặt / Demo.</p>"
+            "</div>",
+            unsafe_allow_html=True
+        )
 
     df_all_wards = query_df("SELECT DISTINCT ward FROM patients WHERE ward IS NOT NULL AND ward<>'' ORDER BY ward")
     ward_list = ["Tất cả"] + (df_all_wards["ward"].tolist() if not df_all_wards.empty else [])
@@ -1449,6 +1467,7 @@ elif page == "Nhập viện mới":
                     for sel in selected:
                         ot, desc = text_to_tuple[sel]
                         add_order({
+                           
                             "patient_id": new_id,
                             "order_type": ot,
                             "description": desc,
@@ -1530,4 +1549,4 @@ elif page == "Cài đặt / Demo":
                 with open(DB_PATH, "rb") as f:
                     data = f.read()
                 st.download_button("Tải file DB", data=data, file_name=DB_PATH, mime="application/x-sqlite3")
-# kết thúc 
+# kết thúc
