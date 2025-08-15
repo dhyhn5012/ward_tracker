@@ -497,6 +497,82 @@ def orders_status_chart(df_orders: pd.DataFrame):
     )
     st.altair_chart(chart, use_container_width=True)
 
+
+@st.dialog("🧑‍⚕️ Khám đi buồng")
+def open_round_dialog(patient_id: int):
+    p = get_patient_info(patient_id)
+    if not p:
+        st.error("Không tìm thấy bệnh nhân."); return
+
+    st.markdown(f"**{p['name']}** — {p.get('medical_id') or '—'}  \nPhòng {p.get('ward','')} • Giường {p.get('bed','') or '—'}")
+    with st.form(f"form_round_{patient_id}"):
+        colA, colB = st.columns([1,1])
+        with colA:
+            try:
+                visit_day = st.date_input("Ngày khám", value=date.today(), format="DD/MM/YYYY")
+            except TypeError:
+                visit_day = st.date_input("Ngày khám", value=date.today())
+        with colB:
+            operated_now = st.checkbox("Đã phẫu thuật", value=bool(p.get("operated",0)))
+
+        general_status = st.text_area("Tình trạng toàn thân", height=100)
+        system_exam    = st.text_area("Khám bộ phận", height=140)
+        plan           = st.text_area("Phương án điều trị tiếp", height=120)
+
+        st.markdown("#### 🧪 CLS thêm")
+        extra_opts = [f"{t[0]} — {t[1]}" for t in COMMON_TESTS]
+        extra_selected = st.multiselect("Chọn CLS", extra_opts)
+        extra_note = st.text_area("Diễn giải CLS / Lý do", placeholder="VD: tăng CRP, nghi nhiễm; kiểm tra HbA1c…")
+        try:
+            extra_scheduled = st.date_input("Ngày dự kiến thực hiện CLS", value=date.today(), format="DD/MM/YYYY")
+        except TypeError:
+            extra_scheduled = st.date_input("Ngày dự kiến thực hiện CLS", value=date.today())
+
+        b1, b2, b3 = st.columns([1,1,1])
+        save_round    = b1.form_submit_button("💾 Lưu khám")
+        discharge_now = b3.form_submit_button("🏁 Xuất viện hôm nay")
+
+    if save_round:
+        update_patient_operated(patient_id, operated_now)
+        round_rec = {
+            "patient_id": patient_id,
+            "visit_date": visit_day.strftime(DATE_FMT),
+            "general_status": general_status.strip(),
+            "system_exam": system_exam.strip(),
+            "plan": plan.strip(),
+            "extra_tests": ", ".join(extra_selected) if extra_selected else "",
+            "extra_tests_note": extra_note.strip(),
+        }
+        add_ward_round(round_rec)
+
+        if extra_selected:
+            today_str = date.today().strftime(DATE_FMT)
+            sched_str = extra_scheduled.strftime(DATE_FMT)
+            text_to_tuple = {f"{t[0]} — {t[1]}": t for t in COMMON_TESTS}
+            for sel in extra_selected:
+                ot, desc = text_to_tuple[sel]
+                desc_full = desc if not extra_note.strip() else f"{desc} — {extra_note.strip()}"
+                add_order({
+                    "patient_id": patient_id,
+                    "order_type": ot,
+                    "description": desc_full,
+                    "date_ordered": today_str,
+                    "scheduled_date": sched_str,
+                    "status": "scheduled",
+                })
+
+        st.success("✅ Đã lưu nội dung khám đi buồng")
+        st.cache_data.clear()
+        safe_rerun()
+
+    if discharge_now:
+        discharge_patient(patient_id)
+        st.success("🏁 Đã xuất viện.")
+        st.cache_data.clear()
+        st.session_state.active_page = "Xuất viện"
+        st.session_state.discharge_view_date = date.today()
+        safe_rerun()
+
 # ======================
 # Trang chủ
 # ======================
@@ -540,16 +616,18 @@ if page == "Trang chủ":
                 }), use_container_width=True, hide_index=True
             )
             for row in df_active.to_dict(orient="records"):
-                cols = st.columns([1,3,1,1,1,1,1])
+                cols = st.columns([1,3,1,1,1,1,1,1])
                 cols[0].markdown(f"**{row['medical_id']}**")
                 diag_txt = f"<br/><span class='small'>Chẩn đoán: {row.get('diagnosis','')}</span>" if row.get("diagnosis") else ""
                 cols[1].markdown(f"**{row['name']}**  \n<span class='small'>{row.get('notes','')}</span>{diag_txt}", unsafe_allow_html=True)
                 cols[2].markdown(f"{row.get('ward','')}/{row.get('bed','') or ''}")
                 cols[3].markdown("🔪 Cần mổ" if row.get("surgery_needed")==1 else "")
                 cols[4].markdown("✅" if row.get("operated")==1 else "✗")
-                if cols[5].button("✏️ Chỉnh sửa", key=f"edit_home_{row['id']}"):
+                if cols[5].button("Khám", key=f"round_home_{row['id']}"):
+                    open_round_dialog(row["id"])
+                if cols[6].button("✏️ Chỉnh sửa", key=f"edit_home_{row['id']}"):
                     go_edit(row["id"])
-                if cols[6].button("Xuất viện", key=f"dis_{row['id']}"):
+                if cols[7].button("Xuất viện", key=f"dis_{row['id']}"):
                     discharge_patient(row["id"]); st.success(f"Đã xuất viện {row['name']}"); safe_rerun()
 
 # ======================
@@ -614,82 +692,6 @@ elif page == "Tổng quan":
 # ======================
 elif page == "Đi buồng":
     st.title("🚶‍♂️ Đi buồng (Ward round)")
-
-    # ========= Modal: form khám =========
-    @st.dialog("🧑‍⚕️ Khám đi buồng")
-    def open_round_dialog(patient_id: int):
-        p = get_patient_info(patient_id)
-        if not p:
-            st.error("Không tìm thấy bệnh nhân."); return
-
-        st.markdown(f"**{p['name']}** — {p.get('medical_id') or '—'}  \nPhòng {p.get('ward','')} • Giường {p.get('bed','') or '—'}")
-        with st.form(f"form_round_{patient_id}"):
-            colA, colB = st.columns([1,1])
-            with colA:
-                try:
-                    visit_day = st.date_input("Ngày khám", value=date.today(), format="DD/MM/YYYY")
-                except TypeError:
-                    visit_day = st.date_input("Ngày khám", value=date.today())
-            with colB:
-                operated_now = st.checkbox("Đã phẫu thuật", value=bool(p.get("operated",0)))
-
-            general_status = st.text_area("Tình trạng toàn thân", height=100)
-            system_exam    = st.text_area("Khám bộ phận", height=140)
-            plan           = st.text_area("Phương án điều trị tiếp", height=120)
-
-            st.markdown("#### 🧪 CLS thêm")
-            extra_opts = [f"{t[0]} — {t[1]}" for t in COMMON_TESTS]
-            extra_selected = st.multiselect("Chọn CLS", extra_opts)
-            extra_note = st.text_area("Diễn giải CLS / Lý do", placeholder="VD: tăng CRP, nghi nhiễm; kiểm tra HbA1c…")
-            try:
-                extra_scheduled = st.date_input("Ngày dự kiến thực hiện CLS", value=date.today(), format="DD/MM/YYYY")
-            except TypeError:
-                extra_scheduled = st.date_input("Ngày dự kiến thực hiện CLS", value=date.today())
-
-            b1, b2, b3 = st.columns([1,1,1])
-            save_round    = b1.form_submit_button("💾 Lưu khám")
-            discharge_now = b3.form_submit_button("🏁 Xuất viện hôm nay")
-
-        if save_round:
-            update_patient_operated(patient_id, operated_now)
-            round_rec = {
-                "patient_id": patient_id,
-                "visit_date": visit_day.strftime(DATE_FMT),
-                "general_status": general_status.strip(),
-                "system_exam": system_exam.strip(),
-                "plan": plan.strip(),
-                "extra_tests": ", ".join(extra_selected) if extra_selected else "",
-                "extra_tests_note": extra_note.strip(),
-            }
-            add_ward_round(round_rec)
-
-            if extra_selected:
-                today_str = date.today().strftime(DATE_FMT)
-                sched_str = extra_scheduled.strftime(DATE_FMT)
-                text_to_tuple = {f"{t[0]} — {t[1]}": t for t in COMMON_TESTS}
-                for sel in extra_selected:
-                    ot, desc = text_to_tuple[sel]
-                    desc_full = desc if not extra_note.strip() else f"{desc} — {extra_note.strip()}"
-                    add_order({
-                        "patient_id": patient_id,
-                        "order_type": ot,
-                        "description": desc_full,
-                        "date_ordered": today_str,
-                        "scheduled_date": sched_str,
-                        "status": "scheduled"
-                    })
-
-            st.success("✅ Đã lưu nội dung khám đi buồng")
-            st.cache_data.clear()
-            safe_rerun()
-
-        if discharge_now:
-            discharge_patient(patient_id)
-            st.success("🏁 Đã xuất viện.")
-            st.cache_data.clear()
-            st.session_state.active_page = "Xuất viện"
-            st.session_state.discharge_view_date = date.today()
-            safe_rerun()
 
     # ==== TÌM KIẾM NHANH BN (không phân biệt dấu, Enter để tìm) ====
     def _strip_accents(s: str) -> str:
