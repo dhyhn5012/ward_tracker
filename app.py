@@ -597,14 +597,14 @@ if page == "Trang chủ":
 # Trang TỔNG QUAN
 # ======================
 elif page == "Tổng quan":
+    st.title("📈 Tổng quan theo tuần")
+
+    # Tính toán số liệu
+    today = date.today()
+    this_start, this_end = week_range(today, 0)
+    last_start, last_end = week_range(today, -1)
+
     try:
-        st.title("📈 Tổng quan theo tuần")
-
-        today = date.today()
-        this_start, this_end = week_range(today, 0)
-        last_start, last_end = week_range(today, -1)
-        st.caption(f"Tuần này: **{this_start.strftime('%d/%m')} – {this_end.strftime('%d/%m/%Y')}**  •  Tuần trước: **{last_start.strftime('%d/%m')} – {last_end.strftime('%d/%m/%Y')}**")
-
         active_this_df = patients_active_between(this_start, this_end)
         treatment_this = len(active_this_df)
         discharge_this = count_discharges_between(this_start, this_end)
@@ -616,16 +616,51 @@ elif page == "Tổng quan":
         discharge_last = count_discharges_between(last_start, last_end)
         orders_last    = count_orders_between(last_start, last_end)
         avg_days_last  = avg_days_treated_in_week(last_start, last_end)
+    except Exception as e:
+        import traceback
+        st.error("Lỗi khi tính toán số liệu. Xem chi tiết")
+        st.code(traceback.format_exc())
+        st.stop()
 
-        st.subheader("Ra viện vs Lượt điều trị (tuần này)")
+    # Debug expander (ẩn) để kiểm tra nội dung trung gian
+    with st.expander("Debug số liệu (chỉ hiện khi cần)"):
+        st.write("this_start", this_start, "this_end", this_end)
+        st.write("treatment_this", treatment_this, type(treatment_this))
+        st.write("discharge_this", discharge_this, type(discharge_this))
+        st.write("orders_this", orders_this, type(orders_this))
+        st.write("avg_days_this", avg_days_this, type(avg_days_this))
+        st.write("treatment_last", treatment_last)
+        st.write("discharge_last", discharge_last)
+        st.write("orders_last", orders_last)
+        st.write("avg_days_last", avg_days_last)
+        st.markdown("---")
+        st.write("Sample active_this_df:")
+        try:
+            st.dataframe(active_this_df.head(), use_container_width=True)
+        except Exception as e:
+            st.write("Không thể hiển thị dataframe:", e)
+
+    # Vẽ biểu đồ — mỗi phần có try/except riêng để bắt lỗi
+    st.subheader("Ra viện vs Lượt điều trị (tuần này)")
+    try:
         df1 = pd.DataFrame({"Chỉ số": ["Lượt điều trị", "Ra viện"], "Giá trị": [treatment_this, discharge_this]})
         st.altair_chart(alt.Chart(df1).mark_bar().encode(x="Chỉ số:N", y="Giá trị:Q", tooltip=["Chỉ số","Giá trị"]).properties(height=280), use_container_width=True)
+    except Exception:
+        import traceback
+        st.error("Lỗi khi vẽ biểu đồ Ra viện vs Lượt điều trị")
+        st.code(traceback.format_exc())
 
-        st.subheader("Chỉ định cận lâm sàng (tuần này) so với Lượt điều trị")
+    st.subheader("Chỉ định cận lâm sàng (tuần này) so với Lượt điều trị")
+    try:
         df2 = pd.DataFrame({"Hạng mục": ["Chỉ định CLS", "Lượt điều trị"], "Số lượng": [orders_this, treatment_this]})
         st.altair_chart(alt.Chart(df2).mark_bar().encode(x="Hạng mục:N", y="Số lượng:Q", tooltip=["Hạng mục","Số lượng"]).properties(height=280), use_container_width=True)
+    except Exception:
+        import traceback
+        st.error("Lỗi khi vẽ biểu đồ Chỉ định CLS")
+        st.code(traceback.format_exc())
 
-        st.subheader("So sánh tuần này và tuần trước")
+    st.subheader("So sánh tuần này và tuần trước")
+    try:
         comp_df = pd.DataFrame([
             {"Chỉ số":"Số ngày điều trị TB/BN", "Tuần":"Tuần trước", "Giá trị": avg_days_last},
             {"Chỉ số":"Số ngày điều trị TB/BN", "Tuần":"Tuần này",   "Giá trị": avg_days_this},
@@ -638,24 +673,27 @@ elif page == "Tổng quan":
             alt.Chart(comp_df)
             .mark_bar()
             .encode(x=alt.X("Chỉ số:N", sort=None), y="Giá trị:Q", column=alt.Column("Tuần:N", sort=["Tuần trước","Tuần này"]),
-                    tooltip=["Tuần","Chỉ số","Giá trị"])
+                    tooltip=["Tuần","Chỉ số","Giá trị"]) 
             .properties(height=280)
             .resolve_scale(y='independent')
         )
         st.altair_chart(chart3, use_container_width=True)
+    except Exception:
+        import traceback
+        st.error("Lỗi khi vẽ biểu đồ So sánh tuần")
+        st.code(traceback.format_exc())
 
-        st.markdown("---")
+    st.markdown("---")
+    try:
         c1, c2, c3, c4 = st.columns(4)
         with c1: kpi("Lượt điều trị (tuần này)", treatment_this)
         with c2: kpi("Ra viện (tuần này)", discharge_this)
         with c3: kpi("CLS (tuần này)", orders_this)
         with c4: kpi("Số ngày điều trị TB/BN", avg_days_this)
-    except Exception as e:
+    except Exception:
         import traceback
-        st.error("Có lỗi khi hiển thị Trang Tổng quan. Vui lòng xem chi tiết bên dưới.")
+        st.error("Lỗi khi hiển thị KPI")
         st.code(traceback.format_exc())
-        # stop further rendering of this page
-        st.stop()
 
 # ======================
 # Đi buồng (đã chuyển sang dùng Modal/Dialog)
