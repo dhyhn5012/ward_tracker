@@ -891,7 +891,7 @@ elif page == "Đi buồng":
             st.dataframe(df_view.drop(columns=["ID"]), use_container_width=True, hide_index=True)
 
             st.markdown("### Khám tại giường")
-            for r in df_room.to_dict(orient="records"):
+            for r in df_room.to_dict("records"):
                 c = st.columns([3,1,1,1,2,1,1])
                 age = calc_age(r.get("dob"))
                 plan_last = plan_map.get(int(r["id"]), "")
@@ -1467,7 +1467,6 @@ elif page == "Nhập viện mới":
                     for sel in selected:
                         ot, desc = text_to_tuple[sel]
                         add_order({
-                           
                             "patient_id": new_id,
                             "order_type": ot,
                             "description": desc,
@@ -1530,16 +1529,70 @@ elif page == "Báo cáo":
 # ======================
 elif page == "Cài đặt / Demo":
     st.title("⚙️ Cài đặt & Demo")
-    st.write("- Chạy: `streamlit run app.py --server.address 0.0.0.0 --server.port 8501`")
-    st.write("- Bật mật khẩu: `export APP_PASSWORD=yourpass` / `set APP_PASSWORD=yourpass`")
+    st.write("- Chạy ứng dụng: `streamlit run app.py --server.address 0.0.0.0 --server.port 8501`")
+    st.write("- Bật mật khẩu (khuyên dùng khi mở mạng): `export APP_PASSWORD=yourpass` (Linux/Mac) hoặc `set APP_PASSWORD=yourpass` (Windows)")
     st.write("- File cơ sở dữ liệu:", DB_PATH)
+
+    # Banner upload / delete
+    st.subheader("🖼️ Quản lý banner trang chủ")
+    st.markdown("Bạn có thể tải ảnh banner (PNG/JPG/GIF). Ảnh sẽ được lưu vào thư mục `static/` và tự động hiển thị trên Trang chủ.")
+
+    # Tạo thư mục static nếu chưa có
+    try:
+        os.makedirs("static", exist_ok=True)
+    except Exception:
+        pass
+
+    # Hiển thị banner hiện tại (nếu có)
+    banner_paths = [os.path.join("static", f) for f in ("banner.png", "banner.jpg", "banner.jpeg", "banner.gif")] 
+    current_banner = next((p for p in banner_paths if os.path.exists(p)), None)
+    if current_banner:
+        st.write("Banner hiện tại:")
+        try:
+            st.image(current_banner, use_column_width=True)
+        except Exception:
+            st.markdown(f"![banner]({current_banner})")
+
+    uploaded = st.file_uploader("Tải ảnh lên (PNG/JPG/GIF)", type=["png", "jpg", "jpeg", "gif"])
+    if uploaded is not None:
+        # lưu file với hậu tố gốc, nhưng tiêu chuẩn hóa tên là banner.ext
+        ext = os.path.splitext(uploaded.name)[1].lower() or ".png"
+        save_name = os.path.join("static", f"banner{ext}")
+        # xóa các banner cũ khác định dạng
+        for p in banner_paths:
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        try:
+            with open(save_name, "wb") as f:
+                f.write(uploaded.getbuffer())
+            st.success("✅ Đã tải lên banner")
+            safe_rerun()
+        except Exception as e:
+            st.error(f"Không thể lưu file: {e}")
+
+    if current_banner:
+        if st.button("🗑️ Xóa banner hiện tại"):
+            removed = 0
+            for p in banner_paths:
+                try:
+                    if os.path.exists(p):
+                        os.remove(p); removed += 1
+                except Exception:
+                    pass
+            if removed:
+                st.success("Đã xóa banner")
+            else:
+                st.info("Không tìm thấy file để xóa")
+            safe_rerun()
 
     c1, c2 = st.columns(2)
     with c1:
         if st.button("Tạo dữ liệu mẫu (demo)"):
             load_sample_data()
             st.success("✅ Đã thêm sample data")
-            st.cache_data.clear()
             safe_rerun()
     with c2:
         if st.button("Tạo backup ngay (tải file .db)"):
