@@ -44,6 +44,31 @@ body{background:var(--bg)}
 .badge.warn{background:#fff8e1}
 .badge.danger{background:#ffebee}
 .embed{width:100%;height:720px;border:1px solid rgba(0,0,0,0.08);border-radius:12px;overflow:hidden}
+
+/* Responsive: tối ưu cho điện thoại */
+@media (max-width: 800px) {
+    .kpi{flex-direction:row;gap:10px;padding:10px}
+    .kpi .icon{width:36px;height:36px;font-size:14px}
+    .kpi h3{font-size:0.75rem}
+    .kpi .v{font-size:1.05rem}
+    .header-card{padding:10px}
+    .quick-actions{flex-direction:column}
+    .quick-btn{width:100%;text-align:left;padding:10px;border-radius:8px}
+    .embed{height:360px}
+    /* Dataframe and charts: make them take full width and be scrollable */
+    .stDataFrame, .stTable, .element-container{width:100% !important}
+    .streamlit-expanderHeader{font-size:0.95rem}
+}
+
+@media (max-width: 420px) {
+    /* Further reduction for small phones */
+    .kpi{flex-direction:column;align-items:flex-start}
+    .kpi .icon{width:34px;height:34px}
+    .kpi .v{font-size:1rem}
+    .header-card{padding:8px}
+    .small{font-size:0.85rem}
+    .embed{height:300px}
+}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
