@@ -471,27 +471,27 @@ def kpi(title: str, value: Any):
         </div>
     """, unsafe_allow_html=True)
 
-def ward_bar_chart(df: pd.DataFrame):
+def ward_pie_chart(df: pd.DataFrame):
     if df.empty:
         st.info("Chưa có dữ liệu BN theo phòng."); return
     chart = (
         alt.Chart(df.rename(columns={"ward":"Phòng"}))
-        .mark_bar()
-        .encode(x=alt.X("Số BN:Q"), y=alt.Y("Phòng:N", sort="-x"),
+        .mark_arc()
+        .encode(theta="Số BN:Q", color="Phòng:N",
                 tooltip=["Phòng:N","Số BN:Q"])
         .properties(height=300)
     )
     st.altair_chart(chart, use_container_width=True)
 
-def orders_status_chart(df_orders: pd.DataFrame):
+def orders_status_pie_chart(df_orders: pd.DataFrame):
     if df_orders.empty:
         st.info("Chưa có dữ liệu chỉ định."); return
     stat = df_orders.groupby("status").size().reset_index(name="Số lượng")
     stat.rename(columns={"status":"Trạng thái"}, inplace=True)
     chart = (
         alt.Chart(stat)
-        .mark_bar()
-        .encode(x=alt.X("Trạng thái:N", sort="-y"), y="Số lượng:Q",
+        .mark_arc()
+        .encode(theta="Số lượng:Q", color="Trạng thái:N",
                 tooltip=["Trạng thái:N","Số lượng:Q"])
         .properties(height=300)
     )
@@ -520,10 +520,10 @@ if page == "Trang chủ":
     st.markdown("---")
 
     st.subheader("BN theo phòng")
-    ward_bar_chart(stats["patients_per_ward"])
+    ward_pie_chart(stats["patients_per_ward"])
 
     st.subheader("Trạng thái chỉ định")
-    orders_status_chart(stats["df_orders"])
+    orders_status_pie_chart(stats["df_orders"])
 
     with st.expander("📋 Danh sách BN (đang điều trị)", expanded=True):
         df_active = stats["df_active"]
