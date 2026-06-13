@@ -301,6 +301,15 @@ def save_patient_file(patient_id: int, uploaded_file, note: str = "") -> None:
         VALUES (?,?,?,?,?,?)
     """, (patient_id, raw_name, mime, full_path, note.strip(), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
 
+def reset_clinical_data() -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM patient_files")
+        conn.execute("DELETE FROM ward_rounds")
+        conn.execute("DELETE FROM orders")
+        conn.execute("DELETE FROM patients")
+        conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('patient_files','ward_rounds','orders','patients')")
+        conn.commit()
+
 # ======================
 # Utilities
 # ======================
@@ -583,6 +592,54 @@ def orders_status_pie_chart(df_orders: pd.DataFrame):
     )
     st.altair_chart(chart, use_container_width=True)
 
+QUICK_STATUS = ["Ổn", "Theo dõi sát", "Đau", "Sốt", "Nặng hơn", "Có biến cố"]
+QUICK_NEURO = ["Không đổi", "Tốt hơn", "Xấu hơn", "Không ghi nhận thiếu sót mới", "Yếu/liệt mới", "Đau lan/tê bì"]
+QUICK_WOUND = ["Không có vết mổ", "Vết mổ khô", "Thấm ít dịch", "Đỏ/nề", "Nghi nhiễm trùng", "Tụ dịch/chảy dịch"]
+QUICK_DRAIN = ["Không dẫn lưu", "<50 ml/24h", "50-100 ml/24h", ">100 ml/24h", "Dịch máu", "Dịch trong"]
+QUICK_DECISIONS = ["Nằm tiếp", "Có thể ra viện", "Chuẩn bị mổ", "Sau mổ theo dõi", "Cần CLS", "Cần hội chẩn", "Chuyển ICU"]
+QUICK_TASKS = ["Thay băng", "Rút dẫn lưu", "Tập PHCN", "Theo dõi sốt", "Theo dõi đau", "Kê đơn ra viện", "Hẹn tái khám", "Báo mổ", "Hội chẩn"]
+
+def priority_label(row: Dict[str, Any], done_today: bool) -> str:
+    if not done_today:
+        return "Chưa khám"
+    if row.get("surgery_needed") == 1 and row.get("operated") != 1:
+        return "Chờ mổ"
+    if row.get("operated") == 1:
+        return "Sau mổ"
+    if row.get("over_planned"):
+        return "Nằm lâu"
+    return "Theo dõi"
+
+def build_quick_round_text(
+    patient: Dict[str, Any],
+    status: str,
+    pain_score: int,
+    neuro: str,
+    wound: str,
+    drain: str,
+    decision: str,
+    tasks: List[str],
+    note: str,
+) -> Tuple[str, str, str]:
+    pain_level = "không đau hoặc đau nhẹ" if pain_score <= 3 else ("đau mức vừa" if pain_score <= 6 else "đau nhiều")
+    general_status = f"BN {status.lower()}, {pain_level} (VAS {pain_score}/10)."
+    system_exam = f"Thần kinh: {neuro.lower()}. Vết mổ: {wound.lower()}. Dẫn lưu: {drain.lower()}."
+    task_text = ", ".join(tasks) if tasks else "theo dõi và điều trị theo y lệnh"
+    plan = f"Hôm nay: {decision}. Việc cần làm: {task_text}."
+    if note.strip():
+        plan += f" Ghi chú: {note.strip()}"
+    return general_status, system_exam, plan
+
+def quick_order_suggestions(decision: str, tasks: List[str]) -> List[str]:
+    suggestions = []
+    if decision == "Cần CLS":
+        suggestions.extend(["XN máu — Tổng phân tích tế bào máu", "XN máu — Sinh hoá cơ bản"])
+    if "Báo mổ" in tasks:
+        suggestions.append("XN máu — Đông máu")
+    if decision == "Sau mổ theo dõi":
+        suggestions.append("XN máu — Tổng phân tích tế bào máu")
+    return suggestions
+
 # ======================
 # Buổi sáng trước đi buồng
 # ======================
@@ -703,6 +760,113 @@ if page == "Buổi sáng":
                 use_container_width=True,
                 hide_index=True,
             )
+
+    st.markdown("---")
+    st.subheader("Đi buồng nhanh")
+    quick_df = df_active.copy()
+    quick_df["Đã khám hôm nay"] = quick_df["id"].astype(int).isin(done_ids)
+    quick_df["Nhóm"] = quick_df.apply(lambda r: priority_label(r.to_dict(), bool(r["Đã khám hôm nay"])), axis=1)
+    quick_df["Một dòng"] = quick_df.apply(
+        lambda r: f"{r.get('ward') or '—'}/{r.get('bed') or '—'} - {r.get('name') or ''} - {r.get('diagnosis') or 'Chưa ghi chẩn đoán'}",
+        axis=1
+    )
+
+    group_order = ["Chưa khám", "Chờ mổ", "Sau mổ", "Nằm lâu", "Theo dõi"]
+    st.dataframe(
+        quick_df[["Nhóm", "Một dòng", "days_in_hospital", "surgery_needed", "operated"]]
+        .rename(columns={
+            "days_in_hospital": "Ngày ĐT",
+            "surgery_needed": "Cần mổ",
+            "operated": "Đã mổ",
+        })
+        .sort_values("Nhóm", key=lambda s: s.map({v: i for i, v in enumerate(group_order)}).fillna(99)),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    quick_options = quick_df["id"].astype(int).tolist()
+    quick_default = quick_options[0]
+    if not df_need_round.empty:
+        quick_default = int(df_need_round.iloc[0]["id"])
+    if "quick_patient_id" in st.session_state and int(st.session_state.quick_patient_id) in quick_options:
+        quick_default = int(st.session_state.quick_patient_id)
+
+    quick_pid = st.selectbox(
+        "Chọn BN để ghi nhanh",
+        options=quick_options,
+        index=quick_options.index(quick_default),
+        format_func=lambda x: quick_df[quick_df["id"] == x]["Một dòng"].values[0],
+        key="quick_patient_id",
+    )
+    quick_patient = get_patient_info(int(quick_pid))
+    quick_latest_plan = latest_plan_map_all_patients().get(int(quick_pid), "")
+    st.caption(f"Kế hoạch gần nhất: {quick_latest_plan or 'Chưa có'}")
+
+    with st.form(f"quick_round_form_{quick_pid}", clear_on_submit=True):
+        q1, q2, q3 = st.columns([1, 1, 1])
+        with q1:
+            status = st.selectbox("Diễn biến", QUICK_STATUS, index=0)
+            pain_score = st.slider("Đau VAS", min_value=0, max_value=10, value=2)
+            operated_now = st.checkbox("Đã phẫu thuật", value=bool(quick_patient.get("operated", 0) if quick_patient else 0))
+        with q2:
+            neuro = st.selectbox("Thần kinh", QUICK_NEURO, index=0)
+            wound = st.selectbox("Vết mổ", QUICK_WOUND, index=1 if quick_patient and quick_patient.get("operated", 0) else 0)
+            drain = st.selectbox("Dẫn lưu", QUICK_DRAIN, index=0)
+        with q3:
+            decision = st.selectbox("Quyết định hôm nay", QUICK_DECISIONS, index=0)
+            tasks = st.multiselect("Việc cần làm", QUICK_TASKS)
+            note = st.text_area("Ghi chú đặc biệt", height=80, placeholder="Chỉ nhập nếu có điểm khác thường")
+
+        suggested = quick_order_suggestions(decision, tasks)
+        all_test_opts = [f"{t[0]} — {t[1]}" for t in COMMON_TESTS]
+        default_tests = [x for x in suggested if x in all_test_opts]
+        quick_tests = st.multiselect("CLS thêm hôm nay", all_test_opts, default=default_tests)
+        try:
+            quick_test_date = st.date_input("Ngày làm CLS", value=today, format="DD/MM/YYYY", key=f"quick_cls_date_{quick_pid}")
+        except TypeError:
+            quick_test_date = st.date_input("Ngày làm CLS", value=today, key=f"quick_cls_date_{quick_pid}")
+
+        general_status, system_exam, plan = build_quick_round_text(
+            quick_patient or {}, status, int(pain_score), neuro, wound, drain, decision, tasks, note
+        )
+        with st.expander("Xem câu khám sẽ lưu", expanded=False):
+            st.write("**Toàn thân:**", general_status)
+            st.write("**Khám:**", system_exam)
+            st.write("**Kế hoạch:**", plan)
+
+        save_quick = st.form_submit_button("Lưu nhanh và chuyển BN tiếp theo")
+
+    if save_quick and quick_patient:
+        update_patient_operated(int(quick_pid), operated_now)
+        add_ward_round({
+            "patient_id": int(quick_pid),
+            "visit_date": today_str,
+            "general_status": general_status,
+            "system_exam": system_exam,
+            "plan": plan,
+            "extra_tests": ", ".join(quick_tests) if quick_tests else "",
+            "extra_tests_note": note.strip(),
+        })
+        if quick_tests:
+            text_to_tuple = {f"{t[0]} — {t[1]}": t for t in COMMON_TESTS}
+            for sel in quick_tests:
+                ot, desc = text_to_tuple[sel]
+                add_order({
+                    "patient_id": int(quick_pid),
+                    "order_type": ot,
+                    "description": desc if not note.strip() else f"{desc} — {note.strip()}",
+                    "date_ordered": today_str,
+                    "scheduled_date": quick_test_date.strftime(DATE_FMT),
+                    "status": "scheduled",
+                })
+
+        remaining_ids = [int(x) for x in df_need_round["id"].tolist() if int(x) != int(quick_pid)]
+        if remaining_ids:
+            st.session_state.quick_patient_id = remaining_ids[0]
+            st.session_state.morning_focus_patient = remaining_ids[0]
+        st.success("Đã lưu khám nhanh.")
+        st.cache_data.clear()
+        safe_rerun()
 
     st.markdown("---")
     st.subheader("Mở từng bệnh nhân")
@@ -1823,74 +1987,101 @@ elif page == "Chỉnh sửa BN":
 elif page == "Nhập viện mới":
     st.title("🧾 Nhập bệnh nhân mới")
     today_year = date.today().year
+    st.caption("Ưu tiên nhập nhanh: thông tin tối thiểu, chẩn đoán, hướng xử trí và CLS ban đầu.")
 
     with st.form("form_add_patient", clear_on_submit=True):
-        c1, c2, c3 = st.columns([1,1,1])
+        st.markdown("#### Thông tin tối thiểu")
+        c1, c2, c3, c4 = st.columns([1,1.5,1,1])
 
         with c1:
             medical_id = st.text_input("Mã bệnh án (không bắt buộc)")
-            ward = st.text_input("Phòng")
-            bed = st.text_input("Giường")
-
         with c2:
             name = st.text_input("Họ tên *", value="")
-            dob_year = st.number_input("Năm sinh (ưu tiên nhập năm)", min_value=1900, max_value=today_year, value=1980, step=1)
-            st.caption(f"≈ Tuổi hiện tại: **{today_year - int(dob_year)}**")
-
         with c3:
-            use_age = st.checkbox("Dùng tuổi để quy đổi năm sinh (tuỳ chọn)")
-            dob_age = None
-            if use_age:
-                dob_age = st.number_input("Nhập tuổi hiện tại", min_value=0, max_value=130, value=45, step=1)
-                st.caption(f"⇄ Quy đổi năm sinh: **{today_year - int(dob_age)}**")
+            ward = st.text_input("Phòng")
+        with c4:
+            bed = st.text_input("Giường")
 
-        with st.expander("Nhập chi tiết ngày sinh (tuỳ chọn)"):
-            use_detail = st.checkbox("Nhập chi tiết (ngày/tháng/năm)")
-            dob_date = None
-            if use_detail:
-                try:
-                    dob_date = st.date_input("Chọn ngày sinh chi tiết", value=date(1980,1,1), format="DD/MM/YYYY")
-                except TypeError:
-                    dob_date = st.date_input("Chọn ngày sinh chi tiết", value=date(1980,1,1))
-                st.caption(f"Đã chọn: **{dob_date.strftime('%d/%m/%Y')}**")
+        age_mode = st.radio("Tuổi / ngày sinh", ["Nhập tuổi", "Nhập năm sinh", "Nhập ngày sinh chi tiết"], horizontal=True)
+        dob_age = None
+        dob_year = None
+        dob_date = None
+        if age_mode == "Nhập tuổi":
+            dob_age = st.number_input("Tuổi", min_value=0, max_value=130, value=50, step=1)
+            st.caption(f"Tạm quy đổi năm sinh: **{today_year - int(dob_age)}**")
+        elif age_mode == "Nhập năm sinh":
+            dob_year = st.number_input("Năm sinh", min_value=1900, max_value=today_year, value=1980, step=1)
+            st.caption(f"Tuổi gần đúng: **{today_year - int(dob_year)}**")
+        else:
+            try:
+                dob_date = st.date_input("Ngày sinh", value=date(1980,1,1), format="DD/MM/YYYY")
+            except TypeError:
+                dob_date = st.date_input("Ngày sinh", value=date(1980,1,1))
 
         try:
             admission_date_ui = st.date_input("Ngày nhập viện", value=date.today(), format="DD/MM/YYYY")
         except TypeError:
             admission_date_ui = st.date_input("Ngày nhập viện", value=date.today())
-            st.caption("Mẹo: Nhập theo dd/mm/yyyy. (Phiên bản Streamlit hiện tại không hỗ trợ format hiển thị)")
 
-        planned_treatment_days = st.number_input("Thời gian điều trị dự kiến (ngày)", min_value=0, value=3)
-        surgery_needed = st.checkbox("Cần phẫu thuật?")
-        diagnosis = st.text_input("📝 Chẩn đoán bệnh", value="", placeholder="VD: Viêm phổi cộng đồng / ĐTĐ typ 2...")
-        operated = st.checkbox("Đã phẫu thuật (nếu đã mổ)")
+        st.markdown("#### Chẩn đoán và hướng xử trí")
+        disease_group = st.selectbox(
+            "Nhóm bệnh / tình huống",
+            ["Chưa phân loại", "Chờ mổ", "Sau mổ", "Chấn thương", "U não/cột sống", "Thoái hóa cột sống", "Nhiễm trùng", "Theo dõi nội khoa", "Khác"],
+        )
+        diagnosis = st.text_input("Chẩn đoán chính *", value="", placeholder="VD: U màng não / Thoát vị đĩa đệm / Chấn thương sọ não...")
+        treatment_mode = st.radio("Kế hoạch chính", ["Nằm theo dõi", "Chuẩn bị mổ", "Sau mổ", "Có thể ra viện sớm"], horizontal=True)
 
-        meds = st.text_area("Thuốc chính")
-        notes = st.text_area("Ghi chú")
+        default_days = 3
+        if treatment_mode == "Chuẩn bị mổ":
+            default_days = 7
+        elif treatment_mode == "Sau mổ":
+            default_days = 5
+        elif disease_group in ["Chấn thương", "Nhiễm trùng"]:
+            default_days = 7
+        planned_treatment_days = st.number_input("Số ngày điều trị dự kiến", min_value=0, value=default_days)
+        surgery_needed = treatment_mode == "Chuẩn bị mổ" or st.checkbox("Đánh dấu cần phẫu thuật")
+        operated = treatment_mode == "Sau mổ" or st.checkbox("Đã phẫu thuật trước khi nhập/nhận vào")
+
+        cnote1, cnote2 = st.columns(2)
+        with cnote1:
+            meds = st.text_area("Thuốc/y lệnh chính ban đầu", height=90)
+        with cnote2:
+            notes = st.text_area("Ghi chú cần nhớ", height=90, placeholder="Dị ứng, bệnh nền, nguy cơ, hẹn mổ...")
 
         st.markdown("---")
-        st.subheader("🧪 Chỉ định cận lâm sàng ban đầu (tùy chọn)")
+        st.subheader("🧪 CLS ban đầu")
 
         options = [f"{t[0]} — {t[1]}" for t in COMMON_TESTS]
-        selected = st.multiselect("Chọn nhanh các chỉ định cần làm", options)
+        default_initial = []
+        if treatment_mode in ["Chuẩn bị mổ", "Sau mổ"]:
+            default_initial = ["XN máu — Tổng phân tích tế bào máu", "XN máu — Sinh hoá cơ bản", "XN máu — Đông máu"]
+        if disease_group in ["Chấn thương", "U não/cột sống"] and "CT — CT sọ não không cản quang" in options:
+            default_initial.append("CT — CT sọ não không cản quang")
+        default_initial = [x for x in default_initial if x in options]
+        selected = st.multiselect("Chọn nhanh các chỉ định cần làm", options, default=default_initial)
         try:
             scheduled_all = st.date_input("Ngày dự kiến thực hiện (áp dụng cho tất cả mục đã chọn)", value=date.today(), format="DD/MM/YYYY")
         except TypeError:
             scheduled_all = st.date_input("Ngày dự kiến thực hiện (áp dụng cho tất cả mục đã chọn)", value=date.today())
 
-        submitted = st.form_submit_button("💾 Lưu bệnh nhân")
+        submitted = st.form_submit_button("Lưu BN và về màn hình buổi sáng")
         if submitted:
-            if use_detail and dob_date:
+            if age_mode == "Nhập ngày sinh chi tiết" and dob_date:
                 dob_final = dob_date
-            elif use_age and dob_age is not None:
+            elif age_mode == "Nhập tuổi" and dob_age is not None:
                 yr = max(1900, min(today_year, today_year - int(dob_age)))
                 dob_final = date(yr, 1, 1)
             else:
-                dob_final = date(int(dob_year), 1, 1)
+                dob_final = date(int(dob_year or 1980), 1, 1)
 
             if not name.strip():
                 st.error("Vui lòng nhập tối thiểu Họ tên.")
+            elif not diagnosis.strip():
+                st.error("Vui lòng nhập chẩn đoán chính.")
             else:
+                final_notes = notes.strip()
+                if disease_group != "Chưa phân loại":
+                    final_notes = f"[{disease_group}] {final_notes}".strip()
                 patient = {
                     "medical_id": medical_id.strip() if medical_id else None,
                     "name": name.strip(),
@@ -1902,7 +2093,7 @@ elif page == "Nhập viện mới":
                     "surgery_needed": surgery_needed,
                     "planned_treatment_days": int(planned_treatment_days),
                     "meds": meds.strip(),
-                    "notes": notes.strip(),
+                    "notes": final_notes,
                     "diagnosis": diagnosis.strip(),
                     "operated": operated,
                 }
@@ -1924,10 +2115,11 @@ elif page == "Nhập viện mới":
                         })
 
                 st.success(
-                    f"✅ Đã thêm BN • DOB: {dob_final.strftime('%d/%m/%Y')} • Nhập viện: {admission_date_ui.strftime('%d/%m/%Y')}"
-                    + (f" • Đã tạo {len(selected)} chỉ định" if selected else "")
+                    f"Đã thêm BN • DOB: {dob_final.strftime('%d/%m/%Y')} • Nhập viện: {admission_date_ui.strftime('%d/%m/%Y')}"
+                    + (f" • Đã tạo {len(selected)} CLS" if selected else "")
                 )
                 st.cache_data.clear()
+                st.session_state.active_page = "Buổi sáng"
                 safe_rerun()
 
 # ======================
@@ -1980,6 +2172,18 @@ elif page == "Cài đặt / Demo":
     st.write("- Chạy ứng dụng: `streamlit run app.py --server.address 0.0.0.0 --server.port 8501`")
     st.write("- Bật mật khẩu (khuyên dùng khi mở mạng): `export APP_PASSWORD=yourpass` (Linux/Mac) hoặc `set APP_PASSWORD=yourpass` (Windows)")
     st.write("- File cơ sở dữ liệu:", DB_PATH)
+
+    st.subheader("Dọn dữ liệu bệnh nhân cũ")
+    st.warning("Chỉ dùng khi anh muốn làm sạch danh sách bệnh nhân cũ/demo. Thao tác này xóa bệnh nhân, khám đi buồng, CLS và liên kết tệp trong database.")
+    confirm_reset = st.text_input("Gõ XOA để xác nhận xóa dữ liệu cũ", key="confirm_reset_clinical")
+    if st.button("Xóa toàn bộ dữ liệu bệnh nhân cũ"):
+        if confirm_reset.strip().upper() == "XOA":
+            reset_clinical_data()
+            st.cache_data.clear()
+            st.success("Đã xóa sạch dữ liệu bệnh nhân cũ. Có thể bắt đầu nhập bệnh nhân mới.")
+            safe_rerun()
+        else:
+            st.error("Chưa xác nhận. Vui lòng gõ XOA trước khi bấm xóa.")
 
     # Banner upload / delete
     st.subheader("🖼️ Quản lý banner trang chủ")
